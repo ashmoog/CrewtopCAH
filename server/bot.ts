@@ -590,18 +590,16 @@ client.on("messageCreate", async (message) => {
               if (remainingToPick > 0) {
                 const updatedHand = await storage.getHand(player.id);
                 const handList = updatedHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
-                const handMsg = await message.channel.send({
-                  content: `<@${message.author.id}>`,
+                await message.author.send({
                   embeds: [
                     new EmbedBuilder()
                       .setTitle(`Played: ${selectedCard.text}`)
-                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number to play.`)
+                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number in the game channel to play.`)
                       .setColor(0x2F3136)
                   ]
+                }).catch(() => {
+                  message.channel.send({ content: `${message.author.username} played a card. ${remainingToPick} more to pick.` });
                 });
-                setTimeout(async () => {
-                  try { await handMsg.delete(); } catch {}
-                }, 30000);
               } else {
                 await message.channel.send(`${message.author.username} has finished playing their cards!`);
               }
@@ -766,7 +764,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     embeds: [
       new EmbedBuilder()
         .setTitle("All cards are in!")
-        .setDescription(`**Judge:** <@${game.judgeId}>\n\n## ${blackCard?.text}\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+        .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
         .setColor(0x00FF00)
     ]
   });
@@ -843,7 +841,7 @@ async function startRound(channel: any, gameId: number) {
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
-        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n## ${blackCard.text}`)
+        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n**Black Card:**\n${blackCard.text}`)
         .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
