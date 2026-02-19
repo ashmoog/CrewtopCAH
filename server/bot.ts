@@ -11,7 +11,7 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-const HAND_SIZE = 7;
+const HAND_SIZE = 10;
 
 const commands = [
   new SlashCommandBuilder()
@@ -198,9 +198,17 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    const blackCard = await storage.getCard(game.currentBlackCardId!);
+    if (!blackCard) {
+      await interaction.reply({ content: "Error: Black card not found.", ephemeral: true });
+      return;
+    }
+
     const played = await storage.getPlayedCards(game.id);
-    if (played.find(p => p.playerId === player.id)) {
-      await interaction.reply({ content: "You have already played a card this round.", ephemeral: true });
+    const playerPlayed = played.filter(p => p.playerId === player.id);
+    
+    if (playerPlayed.length >= (blackCard.pick || 1)) {
+      await interaction.reply({ content: `You have already played the required ${(blackCard.pick || 1)} cards this round.`, ephemeral: true });
       return;
     }
 
@@ -216,23 +224,39 @@ client.on("interactionCreate", async (interaction) => {
     await storage.playCard(game.id, player.id, selectedCard.id);
     await storage.removeFromHand(player.id, selectedCard.id);
 
-    await interaction.reply({ content: `You played: ${selectedCard.text}`, ephemeral: true });
-    await interaction.channel?.send(`${user.username} has played a card!`);
+    const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
+    
+    if (remainingToPick > 0) {
+      await interaction.reply({ content: `You played: ${selectedCard.text}. You need to pick ${remainingToPick} more card(s).`, ephemeral: true });
+    } else {
+      await interaction.reply({ content: `You played your final card: ${selectedCard.text}`, ephemeral: true });
+      await interaction.channel?.send(`${user.username} has finished playing their cards!`);
+    }
 
     const players = await storage.getPlayers(game.id);
     const totalPlayersToPlay = players.length - 1;
     const currentlyPlayed = await storage.getPlayedCards(game.id);
+    
+    // Check if all players have played all their required cards
+    const totalPicksRequired = totalPlayersToPlay * (blackCard.pick || 1);
 
-    if (currentlyPlayed.length >= totalPlayersToPlay) {
+    if (currentlyPlayed.length >= totalPicksRequired) {
       await storage.updateGameStatus(game.id, "judging");
-      const cardList = currentlyPlayed.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
       
-      const blackCard = await storage.getCard(game.currentBlackCardId!);
+      // Group cards by player for display
+      const groupedPlayed: { [playerId: number]: string[] } = {};
+      currentlyPlayed.forEach(c => {
+        if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
+        groupedPlayed[c.playerId].push(c.text);
+      });
+
+      const optionsList = Object.values(groupedPlayed).map((texts, i) => `**${i + 1}.** ${texts.join(" / ")}`).join("\n");
+      
       await interaction.channel?.send({
         embeds: [
           new EmbedBuilder()
             .setTitle("All cards are in!")
-            .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${cardList}\n\nJudge, pick the winner with \`/judge <number>\``)
+            .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner with \`/judge <number>\``)
             .setColor(0x00FF00)
         ]
       });
@@ -259,17 +283,37 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    const winnerCard = playedCards[index];
+    const winnerCard = playedCards.find(c => {
+      // Find the group of cards belonging to the player who played the winning combination
+      // Since groupedPlayed was used to display 1..N options, we need to map back
+      const grouped: { [playerId: number]: any[] } = {};
+      playedCards.forEach(pc => {
+        if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
+        grouped[pc.playerId].push(pc);
+      });
+      const playerIds = Object.keys(grouped);
+      return playerIds[index] === String(c.playerId);
+    });
+
+    if (!winnerCard) {
+      await interaction.reply({ content: "Could not determine winner.", ephemeral: true });
+      return;
+    }
+
     const winner = await storage.incrementScore(winnerCard.playerId);
     
     await interaction.reply(`Selected winner: ${winner.username}`);
     
     const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+    
+    // Get all cards played by the winner for the announcement
+    const winnerGroup = playedCards.filter(c => c.playerId === winnerCard.playerId).map(c => `"${c.text}"`).join(" / ");
+
     await interaction.channel?.send({
       embeds: [
         new EmbedBuilder()
           .setTitle("Winner Selected!")
-          .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Card:** "${winnerCard.text}"`)
+          .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}`)
           .setColor(0xFFD700)
       ]
     });
