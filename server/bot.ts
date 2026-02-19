@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { storage } from "./storage";
 
 const client = new Client({
@@ -74,6 +74,34 @@ export async function startBot() {
 }
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isButton()) {
+    if (interaction.customId === 'view_hand') {
+      const game = await storage.getGame(interaction.channelId!);
+      if (!game) {
+        return interaction.reply({ content: "No active game in this channel.", ephemeral: true });
+      }
+      const player = await storage.getPlayer(game.id, interaction.user.id);
+      if (!player) {
+        return interaction.reply({ content: "You are not in the game. Use /join to participate!", ephemeral: true });
+      }
+
+      const blackCard = await storage.getCard(game.currentBlackCardId || 0);
+      const hand = await storage.getHand(player.id);
+      const description = hand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Your Hand")
+            .setDescription(`**Current Black Card:** ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nUse \`/pick <number>\` in the channel to play.`)
+            .setColor(0x2F3136)
+        ],
+        ephemeral: true
+      });
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, options, channelId, guildId, user } = interaction;
@@ -329,13 +357,22 @@ async function startRound(channel: any, gameId: number) {
   const game = await storage.getGame(channel.id);
   const judgePlayer = players.find(p => p.userId === game?.judgeId);
   
+  const row = new ActionRowBuilder<ButtonBuilder>()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('view_hand')
+        .setLabel('View Cards')
+        .setStyle(ButtonStyle.Primary),
+    );
+
   await channel.send({
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
         .setDescription(`**Judge:** ${judgePlayer?.username}\n\n**Black Card:**\n${blackCard.text}`)
-        .setFooter({ text: "Players, use /hand to see your cards and /pick <number> to play." })
+        .setFooter({ text: "Click 'View Cards' to see your hand and play!" })
         .setColor(0x000000)
-    ]
+    ],
+    components: [row]
   });
 }
