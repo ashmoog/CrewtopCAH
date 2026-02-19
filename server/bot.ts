@@ -745,24 +745,29 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
 
   const timer = setTimeout(async () => {
     roundTimers.delete(gameId);
-    const currentGame = await storage.getGame(channel.id);
-    if (!currentGame || currentGame.status !== "judging") return;
+    try {
+      const currentGame = await storage.getGame(channel.id);
+      if (!currentGame || currentGame.id !== gameId || currentGame.status !== "judging") return;
 
-    await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("Time's Up!")
-          .setDescription("The judge didn't pick in time. No winner this round. Moving on...")
-          .setColor(0xFF6600)
-      ]
-    });
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Time's Up!")
+            .setDescription("The judge didn't pick in time. No winner this round. Moving on...")
+            .setColor(0xFF6600)
+        ]
+      });
 
-    const players = await storage.getPlayers(gameId);
-    const currentJudgeIndex = players.findIndex((p: any) => p.userId === currentGame.judgeId);
-    const nextJudge = players[(currentJudgeIndex + 1) % players.length];
-    await storage.setGameJudge(gameId, nextJudge.userId);
-    await storage.clearPlayedCards(gameId);
-    await startRound(channel, gameId);
+      const players = await storage.getPlayers(gameId);
+      if (players.length < 2) return;
+      const currentJudgeIndex = players.findIndex((p: any) => p.userId === currentGame.judgeId);
+      const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+      await storage.setGameJudge(gameId, nextJudge.userId);
+      await storage.clearPlayedCards(gameId);
+      await startRound(channel, gameId);
+    } catch (e) {
+      console.error("Error in judging timer:", e);
+    }
   }, ROUND_TIMEOUT);
 
   roundTimers.set(gameId, timer);
@@ -819,54 +824,59 @@ async function startRound(channel: any, gameId: number) {
 
   const timer = setTimeout(async () => {
     roundTimers.delete(gameId);
-    const currentGame = await storage.getGame(channel.id);
-    if (!currentGame || currentGame.status !== "playing") return;
+    try {
+      const currentGame = await storage.getGame(channel.id);
+      if (!currentGame || currentGame.id !== gameId || currentGame.status !== "playing") return;
 
-    const currentBlackCard = currentGame.currentBlackCardId ? await storage.getCard(currentGame.currentBlackCardId) : null;
-    if (!currentBlackCard) return;
+      const currentBlackCard = currentGame.currentBlackCardId ? await storage.getCard(currentGame.currentBlackCardId) : null;
+      if (!currentBlackCard) return;
 
-    const playedCards = await storage.getPlayedCards(gameId);
-    if (playedCards.length > 0) {
-      const allPlayers = await storage.getPlayers(gameId);
-      const playedPlayerIds = new Set(playedCards.map(c => c.playerId));
-      const submitted: string[] = [];
-      const missed: string[] = [];
-      for (const p of allPlayers) {
-        if (p.userId === currentGame.judgeId) continue;
-        const hand = await storage.getHand(p.id);
-        if (hand.length === 0 && !playedPlayerIds.has(p.id)) continue;
-        if (playedPlayerIds.has(p.id)) {
-          submitted.push(p.username);
-        } else {
-          missed.push(p.username);
+      const playedCards = await storage.getPlayedCards(gameId);
+      if (playedCards.length > 0) {
+        const allPlayers = await storage.getPlayers(gameId);
+        const playedPlayerIds = new Set(playedCards.map(c => c.playerId));
+        const submitted: string[] = [];
+        const missed: string[] = [];
+        for (const p of allPlayers) {
+          if (p.userId === currentGame.judgeId) continue;
+          const hand = await storage.getHand(p.id);
+          if (hand.length === 0 && !playedPlayerIds.has(p.id)) continue;
+          if (playedPlayerIds.has(p.id)) {
+            submitted.push(p.username);
+          } else {
+            missed.push(p.username);
+          }
         }
+        const submittedText = submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "";
+        const missedText = missed.length > 0 ? `**Didn't make it:** ${missed.join(", ")}` : "";
+        await channel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("Time's Up!")
+              .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${submittedText}\n${missedText}`.trim())
+              .setColor(0xFF6600)
+          ]
+        });
+        await transitionToJudging(channel, gameId, currentBlackCard, currentGame);
+      } else {
+        await channel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("Time's Up!")
+              .setDescription("No one played any cards. Skipping to the next round...")
+              .setColor(0xFF6600)
+          ]
+        });
+        const allPlayers = await storage.getPlayers(gameId);
+        if (allPlayers.length < 2) return;
+        const currentJudgeIndex = allPlayers.findIndex((p: any) => p.userId === currentGame.judgeId);
+        const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
+        await storage.setGameJudge(gameId, nextJudge.userId);
+        await storage.clearPlayedCards(gameId);
+        await startRound(channel, gameId);
       }
-      const submittedText = submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "";
-      const missedText = missed.length > 0 ? `**Didn't make it:** ${missed.join(", ")}` : "";
-      await channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("Time's Up!")
-            .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${submittedText}\n${missedText}`.trim())
-            .setColor(0xFF6600)
-        ]
-      });
-      await transitionToJudging(channel, gameId, currentBlackCard, currentGame);
-    } else {
-      await channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("Time's Up!")
-            .setDescription("No one played any cards. Skipping to the next round...")
-            .setColor(0xFF6600)
-        ]
-      });
-      const allPlayers = await storage.getPlayers(gameId);
-      const currentJudgeIndex = allPlayers.findIndex((p: any) => p.userId === currentGame.judgeId);
-      const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
-      await storage.setGameJudge(gameId, nextJudge.userId);
-      await storage.clearPlayedCards(gameId);
-      await startRound(channel, gameId);
+    } catch (e) {
+      console.error("Error in playing timer:", e);
     }
   }, ROUND_TIMEOUT);
 
