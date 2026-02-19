@@ -113,6 +113,18 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: "You are not in the game.", ephemeral: true });
       }
 
+      if (game.judgeId === user.id) {
+        return interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("You Are the Judge!")
+              .setDescription("You don't play cards this round. Wait for everyone to submit, then pick the winner!")
+              .setColor(0xFFD700)
+          ],
+          ephemeral: true
+        });
+      }
+
       const blackCard = await storage.getCard(game.currentBlackCardId || 0);
       const hand = await storage.getHand(player.id);
       const description = hand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
@@ -484,9 +496,12 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
   const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
   const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
 
+  const allPlayers = await storage.getPlayers(game.id);
+  const scoreList = allPlayers.sort((a: any, b: any) => b.score - a.score).map((p: any) => `${p.username}: **${p.score}**`).join("\n");
+
   const embed = new EmbedBuilder()
     .setTitle("Winner Selected!")
-    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}`)
+    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}`)
     .setColor(0xFFD700);
 
   const channel = source.channel || source;
@@ -604,11 +619,14 @@ client.on("messageCreate", async (message) => {
             const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
             const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
 
+            const roundPlayers = await storage.getPlayers(game.id);
+            const roundScoreList = roundPlayers.sort((a, b) => b.score - a.score).map(p => `${p.username}: **${p.score}**`).join("\n");
+
             await message.channel.send({
               embeds: [
                 new EmbedBuilder()
                   .setTitle("Winner Selected!")
-                  .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}`)
+                  .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}`)
                   .setColor(0xFFD700)
               ]
             });
@@ -792,7 +810,7 @@ async function startRound(channel: any, gameId: number) {
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
-        .setDescription(`**Judge:** ${judgePlayer?.username}\n\n**Black Card:**\n${blackCard.text}`)
+        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n**Black Card:**\n${blackCard.text}`)
         .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
