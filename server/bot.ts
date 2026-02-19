@@ -391,12 +391,14 @@ client.on("messageCreate", async (message) => {
               await storage.playCard(game.id, player.id, selectedCard.id);
               await storage.removeFromHand(player.id, selectedCard.id);
 
-              // Delete the player's message to keep the channel clean
-              try {
+            // Delete the player's message to keep the channel clean
+            try {
+              if (message.deletable) {
                 await message.delete();
-              } catch (e) {
-                console.error("Failed to delete message:", e);
               }
+            } catch (e) {
+              console.error("Failed to delete message:", e);
+            }
 
               const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
               
@@ -459,13 +461,16 @@ client.on("messageCreate", async (message) => {
           if (winnerCard) {
             // Delete the judge's message to keep the channel clean
             try {
-              await message.delete();
+              if (message.deletable) {
+                await message.delete();
+              }
             } catch (e) {
               console.error("Failed to delete message:", e);
             }
 
             const winner = await storage.incrementScore(winnerCard.playerId);
-            await message.reply(`Selected winner: ${winner.username}`);
+            // Use simple channel.send instead of replying to a potentially deleted message
+            await message.channel.send(`Selected winner: ${winner.username}`);
             
             const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
             const winnerGroup = playedCards.filter(c => String(c.playerId) === winnerId).map(c => `"${c.text}"`).join(" / ");
