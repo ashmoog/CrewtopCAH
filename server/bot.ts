@@ -16,14 +16,8 @@ const commands = [
     .setName('help')
     .setDescription('Show help for the Cards Against Humanity bot'),
   new SlashCommandBuilder()
-    .setName('join')
-    .setDescription('Join the game in this channel'),
-  new SlashCommandBuilder()
-    .setName('start')
-    .setDescription('Start the game (needs 3+ players)'),
-  new SlashCommandBuilder()
-    .setName('hand')
-    .setDescription('View your current hand (sent via DM)'),
+    .setName('play')
+    .setDescription('Start a new game of Cards Against Humanity'),
   new SlashCommandBuilder()
     .setName('score')
     .setDescription('Show current scores'),
@@ -73,14 +67,16 @@ export async function startBot() {
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton()) {
-    if (interaction.customId === 'view_hand') {
-      const game = await storage.getGame(interaction.channelId!);
+    const { customId, user, channelId, guildId } = interaction;
+
+    if (customId === 'view_hand') {
+      const game = await storage.getGame(channelId!);
       if (!game) {
         return interaction.reply({ content: "No active game in this channel.", ephemeral: true });
       }
-      const player = await storage.getPlayer(game.id, interaction.user.id);
+      const player = await storage.getPlayer(game.id, user.id);
       if (!player) {
-        return interaction.reply({ content: "You are not in the game. Use /join to participate!", ephemeral: true });
+        return interaction.reply({ content: "You are not in the game. Use the Join button to participate!", ephemeral: true });
       }
 
       const blackCard = await storage.getCard(game.currentBlackCardId || 0);
@@ -91,11 +87,63 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [
           new EmbedBuilder()
             .setTitle("Your Hand")
-            .setDescription(`**Current Black Card:** ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nUse \`/pick <number>\` in the channel to play.`)
+            .setDescription(`**Current Black Card:** ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
       });
+    }
+
+    if (customId === 'join_game') {
+      let game = await storage.getGame(channelId!);
+      if (!game) {
+        game = await storage.createGame(guildId!, channelId!);
+      } else if (game.status !== "waiting") {
+        return interaction.reply({ content: "Game is already in progress!", ephemeral: true });
+      }
+
+      const player = await storage.getPlayer(game.id, user.id);
+      if (player) {
+        return interaction.reply({ content: "You are already in the game!", ephemeral: true });
+      }
+
+      const players = await storage.getPlayers(game.id);
+      const isFirst = players.length === 0;
+      await storage.addPlayer(game.id, user.id, user.username, isFirst);
+      
+      await interaction.reply(`${user.username} joined the game!`);
+    }
+
+    if (customId === 'start_game') {
+      const game = await storage.getGame(channelId!);
+      if (!game || game.status !== "waiting") {
+        return interaction.reply({ content: "No game to start.", ephemeral: true });
+      }
+
+      const player = await storage.getPlayer(game.id, user.id);
+      if (!player || !player.isVip) {
+        return interaction.reply({ content: "Only the game leader can start the game!", ephemeral: true });
+      }
+
+      const players = await storage.getPlayers(game.id);
+      if (players.length < 3) {
+        return interaction.reply({ content: `Need at least 3 players to start. Currently have ${players.length}.`, ephemeral: true });
+      }
+
+      await interaction.reply("Starting the game...");
+      await storage.updateGameStatus(game.id, "playing");
+      
+      const judge = players[Math.floor(Math.random() * players.length)];
+      await storage.setGameJudge(game.id, judge.userId);
+
+      for (const p of players) {
+        const cards = await storage.getWhiteCards(HAND_SIZE);
+        for (const card of cards) {
+          await storage.addToHand(p.id, card.id);
+        }
+      }
+
+      await startRound(interaction.channel, game.id);
     }
     return;
   }
