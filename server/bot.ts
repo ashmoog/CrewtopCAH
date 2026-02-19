@@ -393,6 +393,13 @@ client.on("messageCreate", async (message) => {
               await storage.playCard(game.id, player.id, selectedCard.id);
               await storage.removeFromHand(player.id, selectedCard.id);
 
+              // Delete the player's message to keep the channel clean
+              try {
+                await message.delete();
+              } catch (e) {
+                console.error("Failed to delete message:", e);
+              }
+
               const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
               
               if (remainingToPick > 0) {
@@ -452,6 +459,13 @@ client.on("messageCreate", async (message) => {
           const winnerCard = playedCards.find(c => String(c.playerId) === winnerId);
           
           if (winnerCard) {
+            // Delete the judge's message to keep the channel clean
+            try {
+              await message.delete();
+            } catch (e) {
+              console.error("Failed to delete message:", e);
+            }
+
             const winner = await storage.incrementScore(winnerCard.playerId);
             await message.reply(`Selected winner: ${winner.username}`);
             
