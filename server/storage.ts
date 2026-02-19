@@ -209,7 +209,8 @@ export class DatabaseStorage implements IStorage {
     .from(playedCards)
     .innerJoin(cards, eq(playedCards.cardId, cards.id))
     .innerJoin(players, eq(playedCards.playerId, players.id))
-    .where(eq(playedCards.gameId, gameId));
+    .where(eq(playedCards.gameId, gameId))
+    .orderBy(playedCards.id);
   }
 
   async clearPlayedCards(gameId: number): Promise<void> {
