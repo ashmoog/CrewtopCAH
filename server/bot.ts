@@ -371,8 +371,117 @@ client.on("interactionCreate", async (interaction) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+  
+  // Handle numeric input in game channels
+  if (message.guildId) {
+    const game = await storage.getGame(message.channelId);
+    if (game && game.status === "playing") {
+      const player = await storage.getPlayer(game.id, message.author.id);
+      if (player && game.judgeId !== message.author.id) {
+        const num = parseInt(message.content.trim());
+        if (!isNaN(num)) {
+          const blackCard = await storage.getCard(game.currentBlackCardId!);
+          const played = await storage.getPlayedCards(game.id);
+          const playerPlayed = played.filter(p => p.playerId === player.id);
+          
+          if (blackCard && playerPlayed.length < (blackCard.pick || 1)) {
+            const hand = await storage.getHand(player.id);
+            const index = num - 1;
+            
+            if (index >= 0 && index < hand.length) {
+              const selectedCard = hand[index];
+              await storage.playCard(game.id, player.id, selectedCard.id);
+              await storage.removeFromHand(player.id, selectedCard.id);
+
+              const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
+              
+              if (remainingToPick > 0) {
+                await message.reply(`You played: ${selectedCard.text}. You need to pick ${remainingToPick} more card(s).`);
+              } else {
+                await message.reply(`You played your final card: ${selectedCard.text}`);
+                await message.channel.send(`${message.author.username} has finished playing their cards!`);
+              }
+
+              const players = await storage.getPlayers(game.id);
+              const totalPlayersToPlay = players.length - 1;
+              const currentlyPlayed = await storage.getPlayedCards(game.id);
+              const totalPicksRequired = totalPlayersToPlay * (blackCard.pick || 1);
+
+              if (currentlyPlayed.length >= totalPicksRequired) {
+                await storage.updateGameStatus(game.id, "judging");
+                const groupedPlayed: { [playerId: number]: string[] } = {};
+                currentlyPlayed.forEach(c => {
+                  if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
+                  groupedPlayed[c.playerId].push(c.text);
+                });
+                const optionsList = Object.values(groupedPlayed).map((texts, i) => `**${i + 1}.** ${texts.join(" / ")}`).join("\n");
+                
+                await message.channel.send({
+                  embeds: [
+                    new EmbedBuilder()
+                      .setTitle("All cards are in!")
+                      .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\``)
+                      .setColor(0x00FF00)
+                  ]
+                });
+              }
+              return;
+            }
+          }
+        }
+      }
+    }
+    
+    // Handle judge picking in judging phase
+    if (game && game.status === "judging" && game.judgeId === message.author.id) {
+      const num = parseInt(message.content.trim());
+      if (!isNaN(num)) {
+        const index = num - 1;
+        const playedCards = await storage.getPlayedCards(game.id);
+        
+        // Group to count options correctly
+        const grouped: { [playerId: number]: any[] } = {};
+        playedCards.forEach(pc => {
+          if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
+          grouped[pc.playerId].push(pc);
+        });
+        const playerIds = Object.keys(grouped);
+
+        if (index >= 0 && index < playerIds.length) {
+          const winnerId = playerIds[index];
+          const winnerCard = playedCards.find(c => String(c.playerId) === winnerId);
+          
+          if (winnerCard) {
+            const winner = await storage.incrementScore(winnerCard.playerId);
+            await message.reply(`Selected winner: ${winner.username}`);
+            
+            const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+            const winnerGroup = playedCards.filter(c => String(c.playerId) === winnerId).map(c => `"${c.text}"`).join(" / ");
+
+            await message.channel.send({
+              embeds: [
+                new EmbedBuilder()
+                  .setTitle("Winner Selected!")
+                  .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}`)
+                  .setColor(0xFFD700)
+              ]
+            });
+
+            const players = await storage.getPlayers(game.id);
+            const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
+            const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+            await storage.setGameJudge(game.id, nextJudge.userId);
+            await storage.clearPlayedCards(game.id);
+            await startRound(message.channel, game.id);
+            return;
+          }
+        }
+      }
+    }
+  }
+
   if (message.channel.type === ChannelType.DM) {
-    await message.reply("Please use slash commands (e.g., `/pick`, `/join`) in a server channel to play.");
+    await message.reply("Please use slash commands (e.g., `/pick`, `/join`) or send card numbers in a server channel to play.");
   }
 });
 
