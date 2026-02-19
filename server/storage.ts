@@ -1,6 +1,5 @@
 import { db } from "./db";
 import {
-  users,
   cards,
   games,
   players,
@@ -62,29 +61,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async seedCards() {
-    // Force re-seed if card count is low (ignoring existing to add new ones)
-    // In a real app, we'd use a more sophisticated sync, but for this MVP:
     const [cardCount] = await db.select({ count: sql<number>`count(*)` }).from(cards);
     if (Number(cardCount?.count || 0) < initialCards.length) {
-      // Delete existing to avoid duplicates if re-seeding the whole set
-      // Alternatively, we could just insert and rely on unique constraints if we had them.
-      // For this simple setup, let's just clear and re-insert the full set.
       await db.delete(cards);
-      await db.insert(cards).values(initialCards);
+      await db.insert(cards).values(initialCards as any);
     }
   }
 
   async getWhiteCards(limit: number, excludeIds: number[] = []): Promise<Card[]> {
-    let query = db.select().from(cards).where(eq(cards.type, "white"));
+    let query = db.select().from(cards).where(eq(cards.type, "white")).$dynamic();
     if (excludeIds.length > 0) {
       query = query.where(and(eq(cards.type, "white"), notInArray(cards.id, excludeIds)));
     }
-    // Random sort
     return await query.orderBy(sql`RANDOM()`).limit(limit);
   }
 
   async getBlackCard(excludeIds: number[] = []): Promise<Card | undefined> {
-    let query = db.select().from(cards).where(eq(cards.type, "black"));
+    let query = db.select().from(cards).where(eq(cards.type, "black")).$dynamic();
     if (excludeIds.length > 0) {
       query = query.where(and(eq(cards.type, "black"), notInArray(cards.id, excludeIds)));
     }
@@ -114,7 +107,7 @@ export class DatabaseStorage implements IStorage {
     return game;
   }
 
-  async updateGameStatus(gameId: number, status: string): Promise<Game> {
+  async updateGameStatus(gameId: number, status: "waiting" | "playing" | "judging" | "finished"): Promise<Game> {
     const [game] = await db.update(games).set({ status }).where(eq(games.id, gameId)).returning();
     return game;
   }
