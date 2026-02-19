@@ -145,11 +145,20 @@ client.on("interactionCreate", async (interaction) => {
 
       await storage.addPlayer(game.id, user.id, user.username, false);
       const players = await storage.getPlayers(game.id);
+      const playerList = players.map(p => p.isVip ? `**${p.username}** (leader)` : p.username).join(", ");
 
       if (game.status === "playing" || game.status === "judging") {
-        await interaction.reply(`${user.username} has joined the game! You'll get your cards at the start of the next round. (${players.length} players)`);
+        const originalEmbed = interaction.message.embeds[0];
+        const updatedEmbed = EmbedBuilder.from(originalEmbed)
+          .setDescription(`${originalEmbed.description}\n\n**Players (${players.length}):** ${playerList}`);
+        await interaction.update({ embeds: [updatedEmbed], components: interaction.message.components as any });
       } else {
-        await interaction.reply(`${user.username} has joined the game! (${players.length} players)`);
+        const leader = players.find(p => p.isVip);
+        const updatedEmbed = new EmbedBuilder()
+          .setTitle("Cards Against Humanity")
+          .setDescription(`**${leader?.username}** started a new game!\n\nClick **Join Game** to join, or the leader can use \`/add @player\`.\nThe leader (**${leader?.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${game.pointsToWin || 5}\n\n**Players (${players.length}):** ${playerList}`)
+          .setColor(0x000000);
+        await interaction.update({ embeds: [updatedEmbed], components: interaction.message.components as any });
       }
     }
 
@@ -245,7 +254,7 @@ client.on("interactionCreate", async (interaction) => {
       embeds: [
         new EmbedBuilder()
           .setTitle("Cards Against Humanity")
-          .setDescription(`**${user.username}** started a new game!\n\nClick **Join Game** to join, or the leader can use \`/add @player\`.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${pointsToWin}`)
+          .setDescription(`**${user.username}** started a new game!\n\nClick **Join Game** to join, or the leader can use \`/add @player\`.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${pointsToWin}\n\n**Players (1):** **${user.username}** (leader)`)
           .setColor(0x000000)
       ],
       components: [row]
