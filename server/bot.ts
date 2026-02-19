@@ -10,14 +10,35 @@ const client = new Client({
 });
 
 const HAND_SIZE = 10;
+const ROUND_TIMEOUT = 60_000;
+
+const roundTimers: Map<number, NodeJS.Timeout> = new Map();
+
+function clearRoundTimer(gameId: number) {
+  const existing = roundTimers.get(gameId);
+  if (existing) {
+    clearTimeout(existing);
+    roundTimers.delete(gameId);
+  }
+}
 
 const commands = [
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show help for the Cards Against Humanity bot'),
   new SlashCommandBuilder()
-    .setName('play')
+    .setName('startgame')
     .setDescription('Start a new game of Cards Against Humanity'),
+  new SlashCommandBuilder()
+    .setName('endgame')
+    .setDescription('End the current game'),
+  new SlashCommandBuilder()
+    .setName('add')
+    .setDescription('Add a player to the game (leader only)')
+    .addUserOption(option =>
+      option.setName('player')
+        .setDescription('The player to add')
+        .setRequired(true)),
   new SlashCommandBuilder()
     .setName('score')
     .setDescription('Show current scores'),
@@ -76,7 +97,7 @@ client.on("interactionCreate", async (interaction) => {
       }
       const player = await storage.getPlayer(game.id, user.id);
       if (!player) {
-        return interaction.reply({ content: "You are not in the game. Click Join to participate!", ephemeral: true });
+        return interaction.reply({ content: "You are not in the game.", ephemeral: true });
       }
 
       const blackCard = await storage.getCard(game.currentBlackCardId || 0);
@@ -92,26 +113,6 @@ client.on("interactionCreate", async (interaction) => {
         ],
         ephemeral: true
       });
-    }
-
-    if (customId === 'join_game') {
-      let game = await storage.getGame(channelId!);
-      if (!game) {
-        return interaction.reply({ content: "No game found. Use /play to create one.", ephemeral: true });
-      }
-      if (game.status !== "waiting") {
-        return interaction.reply({ content: "Game is already in progress!", ephemeral: true });
-      }
-
-      const existingPlayer = await storage.getPlayer(game.id, user.id);
-      if (existingPlayer) {
-        return interaction.reply({ content: "You are already in the game!", ephemeral: true });
-      }
-
-      await storage.addPlayer(game.id, user.id, user.username, false);
-
-      const players = await storage.getPlayers(game.id);
-      await interaction.reply(`${user.username} joined the game! (${players.length} players)`);
     }
 
     if (customId === 'start_game') {
@@ -159,28 +160,30 @@ client.on("interactionCreate", async (interaction) => {
           .setTitle("Cards Against Humanity Bot Help")
           .setDescription("How to play:")
           .addFields(
-            { name: "/play", value: "Create a new game with Join & Start buttons" },
+            { name: "/startgame", value: "Create a new game with a Start button" },
+            { name: "/add @player", value: "Add a player to the game (leader only)" },
+            { name: "/endgame", value: "End the current game" },
             { name: "Type a number (1-10)", value: "Play a card from your hand during a round" },
             { name: "/score", value: "Show current scores" },
             { name: "/leave", value: "Leave the game" }
           )
+          .setFooter({ text: "Each round has a 60-second time limit!" })
           .setColor(0x00AE86)
       ]
     });
   }
 
-  if (commandName === "play") {
+  if (commandName === "startgame") {
     let game = await storage.getGame(channelId!);
     if (game && game.status !== "finished") {
       if (game.status === "waiting") {
         const players = await storage.getPlayers(game.id);
         const row = new ActionRowBuilder<ButtonBuilder>()
           .addComponents(
-            new ButtonBuilder().setCustomId('join_game').setLabel('Join Game').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('start_game').setLabel('Start Game').setStyle(ButtonStyle.Primary),
           );
         return interaction.reply({
-          content: `A game is already waiting for players! (${players.length} joined)`,
+          content: `A game is already waiting for players! (${players.length} joined). Use \`/add @player\` to add players.`,
           components: [row]
         });
       }
@@ -192,7 +195,6 @@ client.on("interactionCreate", async (interaction) => {
 
     const row = new ActionRowBuilder<ButtonBuilder>()
       .addComponents(
-        new ButtonBuilder().setCustomId('join_game').setLabel('Join Game').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('start_game').setLabel('Start Game').setStyle(ButtonStyle.Primary),
       );
 
@@ -200,10 +202,70 @@ client.on("interactionCreate", async (interaction) => {
       embeds: [
         new EmbedBuilder()
           .setTitle("Cards Against Humanity")
-          .setDescription(`**${user.username}** started a new game!\n\nClick **Join Game** to join.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.`)
+          .setDescription(`**${user.username}** started a new game!\n\nUse \`/add @player\` to add players.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.`)
           .setColor(0x000000)
       ],
       components: [row]
+    });
+  }
+
+  if (commandName === "add") {
+    const game = await storage.getGame(channelId!);
+    if (!game) {
+      await interaction.reply({ content: "No active game in this channel. Use /startgame first.", ephemeral: true });
+      return;
+    }
+
+    const leader = await storage.getPlayer(game.id, user.id);
+    if (!leader || !leader.isVip) {
+      await interaction.reply({ content: "Only the game leader can add players!", ephemeral: true });
+      return;
+    }
+
+    if (game.status !== "waiting") {
+      await interaction.reply({ content: "Can only add players while the game is waiting to start.", ephemeral: true });
+      return;
+    }
+
+    const targetUser = options.getUser('player')!;
+    if (targetUser.bot) {
+      await interaction.reply({ content: "You can't add bots to the game!", ephemeral: true });
+      return;
+    }
+
+    const existingPlayer = await storage.getPlayer(game.id, targetUser.id);
+    if (existingPlayer) {
+      await interaction.reply({ content: `${targetUser.username} is already in the game!`, ephemeral: true });
+      return;
+    }
+
+    await storage.addPlayer(game.id, targetUser.id, targetUser.username, false);
+    const players = await storage.getPlayers(game.id);
+    await interaction.reply(`${targetUser.username} has been added to the game! (${players.length} players)`);
+  }
+
+  if (commandName === "endgame") {
+    const game = await storage.getGame(channelId!);
+    if (!game || game.status === "finished") {
+      await interaction.reply({ content: "No active game in this channel.", ephemeral: true });
+      return;
+    }
+
+    clearRoundTimer(game.id);
+
+    const players = await storage.getPlayers(game.id);
+    const scores = players.map(p => `${p.username}: ${p.score}`).join("\n");
+
+    await storage.updateGameStatus(game.id, "finished");
+    await storage.clearPlayedCards(game.id);
+
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Game Over!")
+          .setDescription(`The game has been ended.\n\n**Final Scores:**\n${scores || "No scores."}`)
+          .setColor(0xFF0000)
+      ]
     });
   }
 
@@ -275,49 +337,8 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    const index = options.getInteger('number')! - 1;
-    const playedCards = await storage.getPlayedCards(game.id);
-
-    const grouped: { [playerId: number]: any[] } = {};
-    playedCards.forEach(pc => {
-      if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
-      grouped[pc.playerId].push(pc);
-    });
-    const playerIds = Object.keys(grouped);
-
-    if (index < 0 || index >= playerIds.length) {
-      await interaction.reply({ content: "Invalid selection.", ephemeral: true });
-      return;
-    }
-
-    const winnerId = parseInt(playerIds[index]);
-    const winnerCard = playedCards.find(c => c.playerId === winnerId);
-
-    if (!winnerCard) {
-      await interaction.reply({ content: "Could not determine winner.", ephemeral: true });
-      return;
-    }
-
-    const winner = await storage.incrementScore(winnerCard.playerId);
-    const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
-    const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
-
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("Winner Selected!")
-          .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}`)
-          .setColor(0xFFD700)
-      ]
-    });
-
-    const players = await storage.getPlayers(game.id);
-    const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
-    const nextJudge = players[(currentJudgeIndex + 1) % players.length];
-    await storage.setGameJudge(game.id, nextJudge.userId);
-
-    await storage.clearPlayedCards(game.id);
-    await startRound(interaction.channel, game.id);
+    clearRoundTimer(game.id);
+    await handleJudgeSelection(interaction, game, options.getInteger('number')! - 1);
   }
 
   if (commandName === "score") {
@@ -350,6 +371,60 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply(`${user.username} left the game.`);
   }
 });
+
+async function handleJudgeSelection(source: any, game: any, index: number) {
+  const playedCards = await storage.getPlayedCards(game.id);
+
+  const grouped: { [playerId: number]: any[] } = {};
+  playedCards.forEach(pc => {
+    if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
+    grouped[pc.playerId].push(pc);
+  });
+  const playerIds = Object.keys(grouped);
+
+  if (index < 0 || index >= playerIds.length) {
+    if (source.reply) {
+      await source.reply({ content: "Invalid selection.", ephemeral: true });
+    }
+    return;
+  }
+
+  const winnerId = parseInt(playerIds[index]);
+  const winnerCard = playedCards.find(c => c.playerId === winnerId);
+
+  if (!winnerCard) {
+    if (source.reply) {
+      await source.reply({ content: "Could not determine winner.", ephemeral: true });
+    }
+    return;
+  }
+
+  const winner = await storage.incrementScore(winnerCard.playerId);
+  const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+  const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
+
+  const embed = new EmbedBuilder()
+    .setTitle("Winner Selected!")
+    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}`)
+    .setColor(0xFFD700);
+
+  const channel = source.channel || source;
+  if (source.reply && typeof source.reply === 'function' && source.isChatInputCommand?.()) {
+    await source.reply({ embeds: [embed] });
+  } else if (source.reply && typeof source.reply === 'function') {
+    await source.reply({ embeds: [embed] });
+  } else {
+    await channel.send({ embeds: [embed] });
+  }
+
+  const players = await storage.getPlayers(game.id);
+  const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
+  const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+  await storage.setGameJudge(game.id, nextJudge.userId);
+
+  await storage.clearPlayedCards(game.id);
+  await startRound(channel, game.id);
+}
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -413,18 +488,20 @@ client.on("messageCreate", async (message) => {
         const playerIds = Object.keys(grouped);
 
         if (index >= 0 && index < playerIds.length) {
+          clearRoundTimer(game.id);
+
+          try {
+            if (message.deletable) {
+              await message.delete();
+            }
+          } catch (e) {
+            console.error("Failed to delete message:", e);
+          }
+
           const winnerId = parseInt(playerIds[index]);
           const winnerCard = playedCards.find(c => c.playerId === winnerId);
 
           if (winnerCard) {
-            try {
-              if (message.deletable) {
-                await message.delete();
-              }
-            } catch (e) {
-              console.error("Failed to delete message:", e);
-            }
-
             const winner = await storage.incrementScore(winnerCard.playerId);
             const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
             const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
@@ -452,7 +529,7 @@ client.on("messageCreate", async (message) => {
   }
 
   if (message.channel.type === ChannelType.DM) {
-    await message.reply("Use /play in a server channel to start a game!");
+    await message.reply("Use /startgame in a server channel to start a game!");
   }
 });
 
@@ -466,28 +543,71 @@ async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
   const totalPicksRequired = totalPlayersToPlay * (blackCard.pick || 1);
 
   if (currentlyPlayed.length >= totalPicksRequired) {
-    await storage.updateGameStatus(gameId, "judging");
+    clearRoundTimer(gameId);
+    await transitionToJudging(channel, gameId, blackCard, game);
+  }
+}
 
-    const groupedPlayed: { [playerId: number]: string[] } = {};
-    currentlyPlayed.forEach(c => {
-      if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
-      groupedPlayed[c.playerId].push(c.text);
-    });
+async function transitionToJudging(channel: any, gameId: number, blackCard: any, game: any) {
+  await storage.updateGameStatus(gameId, "judging");
 
-    const optionsList = Object.values(groupedPlayed).map((texts, i) => `**${i + 1}.** ${texts.join(" / ")}`).join("\n");
+  const currentlyPlayed = await storage.getPlayedCards(gameId);
+
+  if (currentlyPlayed.length === 0) {
+    await channel.send("No one played any cards this round. Skipping to next round...");
+    const players = await storage.getPlayers(gameId);
+    const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
+    const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+    await storage.setGameJudge(gameId, nextJudge.userId);
+    await storage.clearPlayedCards(gameId);
+    await startRound(channel, gameId);
+    return;
+  }
+
+  const groupedPlayed: { [playerId: number]: string[] } = {};
+  currentlyPlayed.forEach(c => {
+    if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
+    groupedPlayed[c.playerId].push(c.text);
+  });
+
+  const optionsList = Object.values(groupedPlayed).map((texts, i) => `**${i + 1}.** ${texts.join(" / ")}`).join("\n");
+
+  await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("All cards are in!")
+        .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+        .setColor(0x00FF00)
+    ]
+  });
+
+  const timer = setTimeout(async () => {
+    roundTimers.delete(gameId);
+    const currentGame = await storage.getGame(channel.id);
+    if (!currentGame || currentGame.status !== "judging") return;
 
     await channel.send({
       embeds: [
         new EmbedBuilder()
-          .setTitle("All cards are in!")
-          .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\``)
-          .setColor(0x00FF00)
+          .setTitle("Time's Up!")
+          .setDescription("The judge didn't pick in time. No winner this round. Moving on...")
+          .setColor(0xFF6600)
       ]
     });
-  }
+
+    const players = await storage.getPlayers(gameId);
+    const currentJudgeIndex = players.findIndex((p: any) => p.userId === currentGame.judgeId);
+    const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+    await storage.setGameJudge(gameId, nextJudge.userId);
+    await storage.clearPlayedCards(gameId);
+    await startRound(channel, gameId);
+  }, ROUND_TIMEOUT);
+
+  roundTimers.set(gameId, timer);
 }
 
 async function startRound(channel: any, gameId: number) {
+  clearRoundTimer(gameId);
   await storage.updateGameStatus(gameId, "playing");
   const blackCard = await storage.getBlackCard();
 
@@ -525,9 +645,48 @@ async function startRound(channel: any, gameId: number) {
       new EmbedBuilder()
         .setTitle("New Round!")
         .setDescription(`**Judge:** ${judgePlayer?.username}\n\n**Black Card:**\n${blackCard.text}`)
-        .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play!" })
+        .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
     components: [row]
   });
+
+  const timer = setTimeout(async () => {
+    roundTimers.delete(gameId);
+    const currentGame = await storage.getGame(channel.id);
+    if (!currentGame || currentGame.status !== "playing") return;
+
+    const currentBlackCard = currentGame.currentBlackCardId ? await storage.getCard(currentGame.currentBlackCardId) : null;
+    if (!currentBlackCard) return;
+
+    const playedCards = await storage.getPlayedCards(gameId);
+    if (playedCards.length > 0) {
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Time's Up!")
+            .setDescription("Not everyone played in time, but we'll move on with what we have.")
+            .setColor(0xFF6600)
+        ]
+      });
+      await transitionToJudging(channel, gameId, currentBlackCard, currentGame);
+    } else {
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Time's Up!")
+            .setDescription("No one played any cards. Skipping to the next round...")
+            .setColor(0xFF6600)
+        ]
+      });
+      const allPlayers = await storage.getPlayers(gameId);
+      const currentJudgeIndex = allPlayers.findIndex((p: any) => p.userId === currentGame.judgeId);
+      const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
+      await storage.setGameJudge(gameId, nextJudge.userId);
+      await storage.clearPlayedCards(gameId);
+      await startRound(channel, gameId);
+    }
+  }, ROUND_TIMEOUT);
+
+  roundTimers.set(gameId, timer);
 }
