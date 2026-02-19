@@ -30,6 +30,15 @@ const allowlist = [
   "xlsx",
   "zod",
   "zod-validation-error",
+  "discord.js",
+  "@discordjs/rest",
+  "@discordjs/ws",
+  "@discordjs/collection",
+  "@discordjs/builders",
+  "@discordjs/formatters",
+  "@discordjs/util",
+  "@sapphire/snowflake",
+  "discord-api-types",
 ];
 
 async function buildAll() {

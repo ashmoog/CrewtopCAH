@@ -46,11 +46,11 @@ const commands = [
         .setDescription('The player to add')
         .setRequired(true)),
   new SlashCommandBuilder()
-    .setName('kick')
-    .setDescription('Kick a player from the game (leader only)')
+    .setName('boot')
+    .setDescription('Boot a player from the game (leader only)')
     .addUserOption(option =>
       option.setName('player')
-        .setDescription('The player to kick')
+        .setDescription('The player to boot')
         .setRequired(true)),
   new SlashCommandBuilder()
     .setName('score')
@@ -128,6 +128,31 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    if (customId === 'join_game') {
+      const game = await storage.getGame(channelId!);
+      if (!game || game.status === "finished") {
+        return interaction.reply({ content: "No active game to join.", ephemeral: true });
+      }
+
+      if (user.bot) {
+        return interaction.reply({ content: "Bots can't join the game!", ephemeral: true });
+      }
+
+      const existingPlayer = await storage.getPlayer(game.id, user.id);
+      if (existingPlayer) {
+        return interaction.reply({ content: "You're already in the game!", ephemeral: true });
+      }
+
+      await storage.addPlayer(game.id, user.id, user.username, false);
+      const players = await storage.getPlayers(game.id);
+
+      if (game.status === "playing" || game.status === "judging") {
+        await interaction.reply(`${user.username} has joined the game! You'll get your cards at the start of the next round. (${players.length} players)`);
+      } else {
+        await interaction.reply(`${user.username} has joined the game! (${players.length} players)`);
+      }
+    }
+
     if (customId === 'start_game') {
       const game = await storage.getGame(channelId!);
       if (!game || game.status !== "waiting") {
@@ -173,8 +198,10 @@ client.on("interactionCreate", async (interaction) => {
           .setTitle("Cards Against Humanity Bot Help")
           .setDescription("How to play:")
           .addFields(
-            { name: "/startgame", value: "Create a new game with a Start button" },
+            { name: "/startgame", value: "Create a new game with Join and Start buttons" },
+            { name: "Join Game button", value: "Click to join a game (works before and during a game)" },
             { name: "/add @player", value: "Add a player to the game (leader only)" },
+            { name: "/boot @player", value: "Boot a player from the game (leader only)" },
             { name: "/endgame", value: "End the current game" },
             { name: "Type a number (1-10)", value: "Play a card from your hand during a round" },
             { name: "/score", value: "Show current scores" },
@@ -193,10 +220,11 @@ client.on("interactionCreate", async (interaction) => {
         const players = await storage.getPlayers(game.id);
         const row = new ActionRowBuilder<ButtonBuilder>()
           .addComponents(
+            new ButtonBuilder().setCustomId('join_game').setLabel('Join Game').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('start_game').setLabel('Start Game').setStyle(ButtonStyle.Primary),
           );
         return interaction.reply({
-          content: `A game is already waiting for players! (${players.length} joined). Use \`/add @player\` to add players.`,
+          content: `A game is already waiting for players! (${players.length} joined). Click **Join Game** or use \`/add @player\`.`,
           components: [row]
         });
       }
@@ -209,6 +237,7 @@ client.on("interactionCreate", async (interaction) => {
 
     const row = new ActionRowBuilder<ButtonBuilder>()
       .addComponents(
+        new ButtonBuilder().setCustomId('join_game').setLabel('Join Game').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('start_game').setLabel('Start Game').setStyle(ButtonStyle.Primary),
       );
 
@@ -216,7 +245,7 @@ client.on("interactionCreate", async (interaction) => {
       embeds: [
         new EmbedBuilder()
           .setTitle("Cards Against Humanity")
-          .setDescription(`**${user.username}** started a new game!\n\nUse \`/add @player\` to add players.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${pointsToWin}`)
+          .setDescription(`**${user.username}** started a new game!\n\nClick **Join Game** to join, or the leader can use \`/add @player\`.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${pointsToWin}`)
           .setColor(0x000000)
       ],
       components: [row]
@@ -236,11 +265,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    if (game.status !== "waiting") {
-      await interaction.reply({ content: "Can only add players while the game is waiting to start.", ephemeral: true });
-      return;
-    }
-
     const targetUser = options.getUser('player')!;
     if (targetUser.bot) {
       await interaction.reply({ content: "You can't add bots to the game!", ephemeral: true });
@@ -255,7 +279,12 @@ client.on("interactionCreate", async (interaction) => {
 
     await storage.addPlayer(game.id, targetUser.id, targetUser.username, false);
     const players = await storage.getPlayers(game.id);
-    await interaction.reply(`${targetUser.username} has been added to the game! (${players.length} players)`);
+
+    if (game.status === "playing" || game.status === "judging") {
+      await interaction.reply(`${targetUser.username} has been added! They'll get cards at the start of the next round. (${players.length} players)`);
+    } else {
+      await interaction.reply(`${targetUser.username} has been added to the game! (${players.length} players)`);
+    }
   }
 
   if (commandName === "endgame") {
@@ -370,7 +399,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  if (commandName === "kick") {
+  if (commandName === "boot") {
     const game = await storage.getGame(channelId!);
     if (!game) {
       await interaction.reply({ content: "No active game in this channel.", ephemeral: true });
@@ -379,13 +408,13 @@ client.on("interactionCreate", async (interaction) => {
 
     const leader = await storage.getPlayer(game.id, user.id);
     if (!leader || !leader.isVip) {
-      await interaction.reply({ content: "Only the game leader can kick players!", ephemeral: true });
+      await interaction.reply({ content: "Only the game leader can boot players!", ephemeral: true });
       return;
     }
 
     const targetUser = options.getUser('player')!;
     if (targetUser.id === user.id) {
-      await interaction.reply({ content: "You can't kick yourself!", ephemeral: true });
+      await interaction.reply({ content: "You can't boot yourself!", ephemeral: true });
       return;
     }
 
@@ -396,7 +425,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     await storage.removePlayer(game.id, targetUser.id);
-    await interaction.reply(`${targetUser.username} has been kicked from the game.`);
+    await interaction.reply(`${targetUser.username} has been booted from the game.`);
   }
 
   if (commandName === "leave") {
@@ -615,11 +644,22 @@ async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
   const game = await storage.getGame(channel.id);
   if (!game) return;
 
-  const totalPlayersToPlay = players.length - 1;
   const currentlyPlayed = await storage.getPlayedCards(gameId);
-  const totalPicksRequired = totalPlayersToPlay * (blackCard.pick || 1);
 
-  if (currentlyPlayed.length >= totalPicksRequired) {
+  const eligiblePlayers = [];
+  for (const p of players) {
+    if (p.userId === game.judgeId) continue;
+    const hand = await storage.getHand(p.id);
+    const played = currentlyPlayed.filter(c => c.playerId === p.id);
+    if (hand.length > 0 || played.length > 0) {
+      eligiblePlayers.push({ player: p, playedCount: played.length });
+    }
+  }
+
+  if (eligiblePlayers.length === 0) return;
+
+  const allDone = eligiblePlayers.every(e => e.playedCount >= (blackCard.pick || 1));
+  if (allDone) {
     clearRoundTimer(gameId);
     await transitionToJudging(channel, gameId, blackCard, game);
   }
@@ -715,6 +755,10 @@ async function startRound(channel: any, gameId: number) {
         .setCustomId('view_hand')
         .setLabel('View Cards')
         .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('join_game')
+        .setLabel('Join Game')
+        .setStyle(ButtonStyle.Success),
     );
 
   await channel.send({

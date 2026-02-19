@@ -178,7 +178,7 @@ export class DatabaseStorage implements IStorage {
     .from(hands)
     .innerJoin(cards, eq(hands.cardId, cards.id))
     .where(eq(hands.playerId, playerId))
-    .orderBy(sql`RANDOM()`);
+    .orderBy(hands.id);
   }
 
   async removeFromHand(playerId: number, cardId: number): Promise<void> {
