@@ -383,7 +383,17 @@ client.on("interactionCreate", async (interaction) => {
     const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
 
     if (remainingToPick > 0) {
-      await interaction.reply({ content: `You played: ${selectedCard.text}. You need to pick ${remainingToPick} more card(s).`, ephemeral: true });
+      const updatedHand = await storage.getHand(player.id);
+      const handList = updatedHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle(`Played: ${selectedCard.text}`)
+            .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setColor(0x2F3136)
+        ],
+        ephemeral: true
+      });
     } else {
       await interaction.reply({ content: `You played your final card: ${selectedCard.text}`, ephemeral: true });
       await interaction.channel?.send(`${user.username} has finished playing their cards!`);
@@ -578,7 +588,18 @@ client.on("messageCreate", async (message) => {
               }
 
               if (remainingToPick > 0) {
-                await message.channel.send(`${message.author.username} played a card. ${remainingToPick} more to pick.`);
+                const updatedHand = await storage.getHand(player.id);
+                const handList = updatedHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+                await message.author.send({
+                  embeds: [
+                    new EmbedBuilder()
+                      .setTitle(`Played: ${selectedCard.text}`)
+                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number in the game channel to play.`)
+                      .setColor(0x2F3136)
+                  ]
+                }).catch(() => {
+                  message.channel.send({ content: `${message.author.username} played a card. ${remainingToPick} more to pick.` });
+                });
               } else {
                 await message.channel.send(`${message.author.username} has finished playing their cards!`);
               }
