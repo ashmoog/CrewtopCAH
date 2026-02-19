@@ -691,18 +691,36 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
   }
 
   const groupedPlayed: { [playerId: number]: string[] } = {};
+  const playerNameMap: { [playerId: number]: string } = {};
   currentlyPlayed.forEach(c => {
     if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
     groupedPlayed[c.playerId].push(c.text);
+    playerNameMap[c.playerId] = c.username;
   });
 
   const optionsList = Object.values(groupedPlayed).map((texts, i) => `**${i + 1}.** ${texts.join(" / ")}`).join("\n");
+
+  const allPlayers = await storage.getPlayers(gameId);
+  const playedPlayerIds = new Set(Object.keys(groupedPlayed).map(Number));
+  const submitted: string[] = Object.values(playerNameMap);
+  const missed: string[] = [];
+  for (const p of allPlayers) {
+    if (p.userId === game.judgeId) continue;
+    if (playedPlayerIds.has(p.id)) continue;
+    const hand = await storage.getHand(p.id);
+    if (hand.length > 0) {
+      missed.push(p.username);
+    }
+  }
+
+  const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
+  const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
 
   await channel.send({
     embeds: [
       new EmbedBuilder()
         .setTitle("All cards are in!")
-        .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+        .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
         .setColor(0x00FF00)
     ]
   });
@@ -791,11 +809,27 @@ async function startRound(channel: any, gameId: number) {
 
     const playedCards = await storage.getPlayedCards(gameId);
     if (playedCards.length > 0) {
+      const allPlayers = await storage.getPlayers(gameId);
+      const playedPlayerIds = new Set(playedCards.map(c => c.playerId));
+      const submitted: string[] = [];
+      const missed: string[] = [];
+      for (const p of allPlayers) {
+        if (p.userId === currentGame.judgeId) continue;
+        const hand = await storage.getHand(p.id);
+        if (hand.length === 0 && !playedPlayerIds.has(p.id)) continue;
+        if (playedPlayerIds.has(p.id)) {
+          submitted.push(p.username);
+        } else {
+          missed.push(p.username);
+        }
+      }
+      const submittedText = submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "";
+      const missedText = missed.length > 0 ? `**Didn't make it:** ${missed.join(", ")}` : "";
       await channel.send({
         embeds: [
           new EmbedBuilder()
             .setTitle("Time's Up!")
-            .setDescription("Not everyone played in time, but we'll move on with what we have.")
+            .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${submittedText}\n${missedText}`.trim())
             .setColor(0xFF6600)
         ]
       });
