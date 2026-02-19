@@ -63,6 +63,10 @@ export class DatabaseStorage implements IStorage {
   async seedCards() {
     const [cardCount] = await db.select({ count: sql<number>`count(*)` }).from(cards);
     if (Number(cardCount?.count || 0) < initialCards.length) {
+      await db.delete(playedCards);
+      await db.delete(hands);
+      await db.delete(players);
+      await db.delete(games);
       await db.delete(cards);
       await db.insert(cards).values(initialCards as any);
     }
