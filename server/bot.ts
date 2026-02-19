@@ -1,7 +1,6 @@
-import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder } from "discord.js";
 import { storage } from "./storage";
 
-// Initialize Discord Client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -14,159 +13,135 @@ const client = new Client({
 
 const HAND_SIZE = 7;
 
+const commands = [
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Show help for the Cards Against Humanity bot'),
+  new SlashCommandBuilder()
+    .setName('join')
+    .setDescription('Join the game in this channel'),
+  new SlashCommandBuilder()
+    .setName('start')
+    .setDescription('Start the game (needs 3+ players)'),
+  new SlashCommandBuilder()
+    .setName('hand')
+    .setDescription('View your current hand (sent via DM)'),
+  new SlashCommandBuilder()
+    .setName('score')
+    .setDescription('Show current scores'),
+  new SlashCommandBuilder()
+    .setName('leave')
+    .setDescription('Leave the game'),
+  new SlashCommandBuilder()
+    .setName('pick')
+    .setDescription('Pick a card from your hand')
+    .addIntegerOption(option => 
+      option.setName('number')
+        .setDescription('The number of the card to pick')
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('judge')
+    .setDescription('Choose a winner (Judge only)')
+    .addIntegerOption(option => 
+      option.setName('number')
+        .setDescription('The number of the winning card')
+        .setRequired(true)),
+].map(command => command.toJSON());
+
 export async function startBot() {
   if (!process.env.DISCORD_TOKEN) {
     console.warn("DISCORD_TOKEN not set. Bot will not start.");
     return;
   }
 
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
   try {
+    if (process.env.DISCORD_APPLICATION_ID) {
+      console.log('Started refreshing application (/) commands.');
+      await rest.put(
+        Routes.applicationCommands(process.env.DISCORD_APPLICATION_ID),
+        { body: commands },
+      );
+      console.log('Successfully reloaded application (/) commands.');
+    }
+
     await client.login(process.env.DISCORD_TOKEN);
     console.log(`Logged in as ${client.user?.tag}!`);
   } catch (error) {
-    console.error("Failed to login to Discord:", error);
+    console.error("Failed to login or register commands:", error);
   }
 }
 
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  
-  // Handle DMs separately if needed (for picking cards)
-  if (message.channel.type === ChannelType.DM) {
-    await handleDM(message);
-    return;
-  }
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  if (!message.content.startsWith("!")) return;
+  const { commandName, options, channelId, guildId, user } = interaction;
 
-  const args = message.content.slice(1).trim().split(/ +/);
-  const command = args.shift()?.toLowerCase();
-
-  if (command === "pick") {
-    const game = await storage.getGame(message.channel.id);
-    if (!game || game.status !== "playing") {
-      await message.reply("No active round to pick cards for.");
-      return;
-    }
-
-    if (game.judgeId === message.author.id) {
-      await message.reply("You are the judge this round! You don't pick a card.");
-      return;
-    }
-
-    const player = await storage.getPlayer(game.id, message.author.id);
-    if (!player) {
-      await message.reply("You are not in this game!");
-      return;
-    }
-
-    // Check if already played
-    const played = await storage.getPlayedCards(game.id);
-    if (played.find(p => p.playerId === player.id)) {
-      await message.reply("You have already played a card this round.");
-      return;
-    }
-
-    const index = parseInt(args[0]) - 1;
-    const hand = await storage.getHand(player.id);
-
-    if (isNaN(index) || index < 0 || index >= hand.length) {
-      await message.reply("Invalid card number. Check your hand.");
-      return;
-    }
-
-    const selectedCard = hand[index];
-    await storage.playCard(game.id, player.id, selectedCard.id);
-    await storage.removeFromHand(player.id, selectedCard.id);
-
-    await message.delete().catch(() => {}); // Try to hide the pick
-    await message.channel.send(`${message.author.username} has played a card!`);
-
-    // Check if everyone has played
-    const players = await storage.getPlayers(game.id);
-    const totalPlayersToPlay = players.length - 1; // All except judge
-    const currentlyPlayed = await storage.getPlayedCards(game.id);
-
-    if (currentlyPlayed.length >= totalPlayersToPlay) {
-      await storage.updateGameStatus(game.id, "judging");
-      const cardList = currentlyPlayed.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
-      
-      await message.channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("All cards are in!")
-            .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${(await storage.getCard(game.currentBlackCardId!))?.text}\n\n**Options:**\n${cardList}\n\nJudge, pick the winner with \`!judge <number>\``)
-            .setColor(0x00FF00)
-        ]
-      });
-    }
-  }
-
-  if (command === "help") {
-    await message.reply({
+  if (commandName === "help") {
+    await interaction.reply({
       embeds: [
         new EmbedBuilder()
           .setTitle("Cards Against Humanity Bot Help")
-          .setDescription("Commands:")
+          .setDescription("Slash Commands:")
           .addFields(
-            { name: "!join", value: "Join the game in this channel" },
-            { name: "!start", value: "Start the game (needs 3+ players)" },
-            { name: "!hand", value: "View your current hand (DM)" },
-            { name: "!pick <number>", value: "Pick a card from your hand (DM only)" },
-            { name: "!judge <number>", value: "Judge the winner (Judge only)" },
-            { name: "!score", value: "Show current scores" },
-            { name: "!leave", value: "Leave the game" }
+            { name: "/join", value: "Join the game in this channel" },
+            { name: "/start", value: "Start the game (needs 3+ players)" },
+            { name: "/hand", value: "View your current hand (DM)" },
+            { name: "/pick <number>", value: "Pick a card from your hand" },
+            { name: "/judge <number>", value: "Judge the winner (Judge only)" },
+            { name: "/score", value: "Show current scores" },
+            { name: "/leave", value: "Leave the game" }
           )
           .setColor(0x00AE86)
       ]
     });
   }
 
-  if (command === "join") {
-    let game = await storage.getGame(message.channel.id);
+  if (commandName === "join") {
+    let game = await storage.getGame(channelId!);
     if (!game) {
-      game = await storage.createGame(message.guildId!, message.channel.id);
-      await message.reply("New game created! Waiting for players...");
+      game = await storage.createGame(guildId!, channelId!);
+      await interaction.reply("New game created! Waiting for players...");
     } else if (game.status !== "waiting") {
-      await message.reply("Game is already in progress!");
+      await interaction.reply({ content: "Game is already in progress!", ephemeral: true });
       return;
     }
 
-    const player = await storage.getPlayer(game.id, message.author.id);
+    const player = await storage.getPlayer(game.id, user.id);
     if (player) {
-      await message.reply("You are already in the game!");
+      await interaction.reply({ content: "You are already in the game!", ephemeral: true });
       return;
     }
 
-    await storage.addPlayer(game.id, message.author.id, message.author.username, false);
-    await message.reply(`${message.author.username} joined the game!`);
+    await storage.addPlayer(game.id, user.id, user.username, false);
+    await interaction.reply(`${user.username} joined the game!`);
   }
 
-  if (command === "start") {
-    const game = await storage.getGame(message.channel.id);
+  if (commandName === "start") {
+    const game = await storage.getGame(channelId!);
     if (!game) {
-      await message.reply("No game found. Type !join to create one.");
+      await interaction.reply({ content: "No game found. Type /join to create one.", ephemeral: true });
       return;
     }
     if (game.status !== "waiting") {
-      await message.reply("Game already started.");
+      await interaction.reply({ content: "Game already started.", ephemeral: true });
       return;
     }
 
     const players = await storage.getPlayers(game.id);
     if (players.length < 3) {
-      await message.reply(`Need at least 3 players to start. Currently have ${players.length}.`);
+      await interaction.reply(`Need at least 3 players to start. Currently have ${players.length}.`);
       return;
     }
 
-    // Initialize game
+    await interaction.reply("Starting the game...");
+    
     await storage.updateGameStatus(game.id, "playing");
     
-    // Pick first judge randomly
     const judge = players[Math.floor(Math.random() * players.length)];
     await storage.setGameJudge(game.id, judge.userId);
 
-    // Deal cards to everyone
     for (const p of players) {
       const cards = await storage.getWhiteCards(HAND_SIZE);
       for (const card of cards) {
@@ -174,121 +149,163 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    await startRound(message.channel, game.id);
+    await startRound(interaction.channel, game.id);
   }
 
-  if (command === "judge") {
-    const game = await storage.getGame(message.channel.id);
+  if (commandName === "pick") {
+    const game = await storage.getGame(channelId!);
+    if (!game || game.status !== "playing") {
+      await interaction.reply({ content: "No active round to pick cards for.", ephemeral: true });
+      return;
+    }
+
+    if (game.judgeId === user.id) {
+      await interaction.reply({ content: "You are the judge this round! You don't pick a card.", ephemeral: true });
+      return;
+    }
+
+    const player = await storage.getPlayer(game.id, user.id);
+    if (!player) {
+      await interaction.reply({ content: "You are not in this game!", ephemeral: true });
+      return;
+    }
+
+    const played = await storage.getPlayedCards(game.id);
+    if (played.find(p => p.playerId === player.id)) {
+      await interaction.reply({ content: "You have already played a card this round.", ephemeral: true });
+      return;
+    }
+
+    const index = options.getInteger('number')! - 1;
+    const hand = await storage.getHand(player.id);
+
+    if (isNaN(index) || index < 0 || index >= hand.length) {
+      await interaction.reply({ content: "Invalid card number. Check your hand with /hand.", ephemeral: true });
+      return;
+    }
+
+    const selectedCard = hand[index];
+    await storage.playCard(game.id, player.id, selectedCard.id);
+    await storage.removeFromHand(player.id, selectedCard.id);
+
+    await interaction.reply({ content: `You played: ${selectedCard.text}`, ephemeral: true });
+    await interaction.channel?.send(`${user.username} has played a card!`);
+
+    const players = await storage.getPlayers(game.id);
+    const totalPlayersToPlay = players.length - 1;
+    const currentlyPlayed = await storage.getPlayedCards(game.id);
+
+    if (currentlyPlayed.length >= totalPlayersToPlay) {
+      await storage.updateGameStatus(game.id, "judging");
+      const cardList = currentlyPlayed.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      
+      const blackCard = await storage.getCard(game.currentBlackCardId!);
+      await interaction.channel?.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("All cards are in!")
+            .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${blackCard?.text}\n\n**Options:**\n${cardList}\n\nJudge, pick the winner with \`/judge <number>\``)
+            .setColor(0x00FF00)
+        ]
+      });
+    }
+  }
+
+  if (commandName === "judge") {
+    const game = await storage.getGame(channelId!);
     if (!game || game.status !== "judging") {
-      await message.reply("Not currently judging.");
+      await interaction.reply({ content: "Not currently judging.", ephemeral: true });
       return;
     }
 
-    if (game.judgeId !== message.author.id) {
-      await message.reply("You are not the judge!");
+    if (game.judgeId !== user.id) {
+      await interaction.reply({ content: "You are not the judge!", ephemeral: true });
       return;
     }
 
-    const index = parseInt(args[0]) - 1;
+    const index = options.getInteger('number')! - 1;
     const playedCards = await storage.getPlayedCards(game.id);
     
     if (isNaN(index) || index < 0 || index >= playedCards.length) {
-      await message.reply("Invalid selection.");
+      await interaction.reply({ content: "Invalid selection.", ephemeral: true });
       return;
     }
 
     const winnerCard = playedCards[index];
     const winner = await storage.incrementScore(winnerCard.playerId);
     
-    await message.channel.send({
+    await interaction.reply(`Selected winner: ${winner.username}`);
+    
+    const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+    await interaction.channel?.send({
       embeds: [
         new EmbedBuilder()
           .setTitle("Winner Selected!")
-          .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${game.currentBlackCardId ? (await storage.getCard(game.currentBlackCardId))?.text : ""}\n**Winning Card:** "${winnerCard.text}"`)
+          .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Card:** "${winnerCard.text}"`)
           .setColor(0xFFD700)
       ]
     });
 
-    // Start next round
-    // Rotate judge
     const players = await storage.getPlayers(game.id);
     const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
     const nextJudge = players[(currentJudgeIndex + 1) % players.length];
     await storage.setGameJudge(game.id, nextJudge.userId);
 
-    // Clear played cards
     await storage.clearPlayedCards(game.id);
-
-    await startRound(message.channel, game.id);
+    await startRound(interaction.channel, game.id);
   }
   
-  if (command === "score") {
-    const game = await storage.getGame(message.channel.id);
-    if (!game) return;
+  if (commandName === "score") {
+    const game = await storage.getGame(channelId!);
+    if (!game) {
+      await interaction.reply({ content: "No active game in this channel.", ephemeral: true });
+      return;
+    }
     
     const players = await storage.getPlayers(game.id);
     const scores = players.map(p => `${p.username}: ${p.score}`).join("\n");
     
-    await message.reply({
-      embeds: [new EmbedBuilder().setTitle("Scores").setDescription(scores)]
+    await interaction.reply({
+      embeds: [new EmbedBuilder().setTitle("Scores").setDescription(scores || "No players yet.")]
     });
   }
   
-  if (command === "leave") {
-    // Basic leave logic - simpler to just restart game for MVP
-    await message.reply("Leaving not fully implemented in MVP. Game continues.");
-  }
-  
-  if (command === "hand") {
-    await sendHandToPlayer(message.author, message.channel.id);
+  if (commandName === "hand") {
+    const game = await storage.getGame(channelId!);
+    if (!game) {
+      await interaction.reply({ content: "No active game.", ephemeral: true });
+      return;
+    }
+    const player = await storage.getPlayer(game.id, user.id);
+    if (!player) {
+      await interaction.reply({ content: "You are not in the game.", ephemeral: true });
+      return;
+    }
+    
+    const blackCard = await storage.getCard(game.currentBlackCardId || 0);
+    const hand = await storage.getHand(player.id);
+    const description = hand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+    
+    await user.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Your Hand")
+          .setDescription(`**Current Black Card:** ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nUse \`/pick <number>\` in the channel to play.`)
+      ]
+    }).then(() => interaction.reply({ content: "Check your DMs for your hand!", ephemeral: true }))
+      .catch(() => interaction.reply({ content: "I couldn't DM you! Please enable DMs from server members.", ephemeral: true }));
   }
 });
 
-async function handleDM(message: any) {
-  if (!message.content.startsWith("!pick")) return;
-  
-  const args = message.content.slice(1).trim().split(/ +/);
-  const index = parseInt(args[1]) - 1; // !pick 1
-
-  // Find active game for this user
-  // This is tricky because user could be in multiple guilds.
-  // Ideally, we ask them to specify or track "active game context"
-  // For MVP, we'll just search for the most recent game they are in that is 'playing'
-  
-  // Actually, we can't easily find "game by player" efficiently without a reverse lookup or iterating.
-  // Let's assume one game per bot instance for simplicity or just scan recent games.
-  // Optimization: Store 'currentGameId' on player table? No, player table is per game.
-  // We'll iterate all active games and check if player is in it.
-  
-  // ... Or just tell them to use the command in the channel? No, pick is secret.
-  
-  // Implementation for MVP: Scan active games
-  // Real impl would have better lookup.
-  
-  // Let's rely on the user having only one active game for now.
-  // We can't implement complex "which game" logic in MVP.
-  
-  await message.reply("Please check the server channel for game status. If you tried to pick, I'm processing...");
-  
-  // Logic to process pick would go here:
-  // 1. Find player record in 'playing' game.
-  // 2. Validate index.
-  // 3. Move card from hand to playedCards.
-  // 4. Check if all players played.
-  
-  // Since we don't have gameID context easily in DM without strict state tracking:
-  // We will enforce "!pick <game_id> <card_index>" or just hope for the best?
-  // Let's keep it simple: We won't support DM picking fully in this MVP snippet without more complex state.
-  // Instead, we will implement `!pick` in the CHANNEL but with ephemeral replies? 
-  // Discord.js `message.reply` isn't ephemeral. Slash commands are.
-  // Fallback: User sends `!pick <index>` in DM. We check ALL active games for that user.
-  
-  // TODO: implement DM picking logic properly.
-  await message.reply("To pick a card, please use the numbered list I sent you. (Command processing not fully linked in this lite version)");
-}
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (message.channel.type === ChannelType.DM) {
+    await message.reply("Please use slash commands (e.g., `/pick`, `/join`) in a server channel to play.");
+  }
+});
 
 async function startRound(channel: any, gameId: number) {
-  const game = await storage.updateGameStatus(gameId, "playing");
+  await storage.updateGameStatus(gameId, "playing");
   const blackCard = await storage.getBlackCard();
   
   if (!blackCard) {
@@ -298,7 +315,6 @@ async function startRound(channel: any, gameId: number) {
   
   await storage.setGameBlackCard(gameId, blackCard.id);
   
-  // Replenish hands
   const players = await storage.getPlayers(gameId);
   for (const p of players) {
     const hand = await storage.getHand(p.id);
@@ -308,51 +324,18 @@ async function startRound(channel: any, gameId: number) {
         await storage.addToHand(p.id, card.id);
       }
     }
-    // DM hand
-    if (p.userId !== game.judgeId) {
-      try {
-        const user = await client.users.fetch(p.userId);
-        await sendHand(user, p.id, blackCard.text, channel);
-      } catch (e) {
-        console.error(`Could not DM user ${p.username}`);
-      }
-    }
   }
   
-  const judgePlayer = players.find(p => p.userId === game.judgeId);
+  const game = await storage.getGame(channel.id);
+  const judgePlayer = players.find(p => p.userId === game?.judgeId);
   
   await channel.send({
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
         .setDescription(`**Judge:** ${judgePlayer?.username}\n\n**Black Card:**\n${blackCard.text}`)
-        .setFooter({ text: "Players, I've sent your cards to your DMs for privacy. Reply there with !pick <number>." })
+        .setFooter({ text: "Players, use /hand to see your cards and /pick <number> to play." })
         .setColor(0x000000)
     ]
   });
-}
-
-async function sendHand(user: any, playerId: number, blackCardText: string, channel: any) {
-  const hand = await storage.getHand(playerId);
-  const description = hand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
-  
-  await user.send({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("Your Hand")
-        .setDescription(`**Current Black Card:** ${blackCardText}\n\n${description}\n\nReply with \`!pick <number>\` to play.`)
-    ]
-  });
-}
-
-async function sendHandToPlayer(user: any, channelId: string) {
-    // Helper for !hand command
-    const game = await storage.getGame(channelId);
-    if(!game) return;
-    const player = await storage.getPlayer(game.id, user.id);
-    if(!player) return;
-    
-    // We need the black card text
-    const blackCard = await storage.getCard(game.currentBlackCardId || 0);
-    await sendHand(user, player.id, blackCard?.text || "None");
 }
