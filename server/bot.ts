@@ -136,7 +136,7 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [
           new EmbedBuilder()
             .setTitle("Your Hand")
-            .setDescription(`**Current Black Card:** ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setDescription(`## ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
