@@ -130,13 +130,20 @@ client.on("interactionCreate", async (interaction) => {
 
       const blackCard = await storage.getCard(game.currentBlackCardId || 0);
       const hand = await storage.getHand(player.id);
-      const description = hand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      const played = await storage.getPlayedCards(game.id);
+      const playerPlayed = played.filter(p => p.playerId === player.id);
+      const playedCardIds = new Set(playerPlayed.map(p => p.id));
+      const availableHand = hand.filter(c => !playedCardIds.has(c.id));
+      const description = availableHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+
+      const pickNeeded = (blackCard?.pick || 1) - playerPlayed.length;
+      const pickInfo = pickNeeded > 0 ? `Pick ${pickNeeded} card(s).` : "You've already played your cards this round.";
 
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setTitle("Your Hand")
-            .setDescription(`## ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setDescription(`## ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\n${pickInfo}\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
@@ -324,6 +331,7 @@ client.on("interactionCreate", async (interaction) => {
     const scores = players.map(p => `${p.username}: ${p.score}`).join("\n");
 
     await storage.updateGameStatus(game.id, "finished");
+    await storage.removePlayedCardsFromHands(game.id);
     await storage.clearPlayedCards(game.id);
 
     await interaction.reply({
@@ -371,20 +379,23 @@ client.on("interactionCreate", async (interaction) => {
     const index = options.getInteger('number')! - 1;
     const hand = await storage.getHand(player.id);
 
-    if (isNaN(index) || index < 0 || index >= hand.length) {
+    const playedCardIds = new Set(playerPlayed.map(p => p.id));
+    const availableHand = hand.filter(c => !playedCardIds.has(c.id));
+
+    if (isNaN(index) || index < 0 || index >= availableHand.length) {
       await interaction.reply({ content: "Invalid card number. Click View Cards to check your hand.", ephemeral: true });
       return;
     }
 
-    const selectedCard = hand[index];
+    const selectedCard = availableHand[index];
     await storage.playCard(game.id, player.id, selectedCard.id);
-    await storage.removeFromHand(player.id, selectedCard.id);
 
     const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
 
     if (remainingToPick > 0) {
-      const updatedHand = await storage.getHand(player.id);
-      const handList = updatedHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      const newPlayedIds = new Set(Array.from(playedCardIds).concat([selectedCard.id]));
+      const updatedAvailable = hand.filter(c => !newPlayedIds.has(c.id));
+      const handList = updatedAvailable.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -529,6 +540,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
   if (winner.score >= (game.pointsToWin || 5)) {
     clearRoundTimer(game.id);
     await storage.updateGameStatus(game.id, "finished");
+    await storage.removePlayedCardsFromHands(game.id);
     await storage.clearPlayedCards(game.id);
     const players = await storage.getPlayers(game.id);
     const scores = players.map((p: any) => `${p.username}: ${p.score}`).join("\n");
@@ -548,7 +560,8 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
   const nextJudge = players[(currentJudgeIndex + 1) % players.length];
   await storage.setGameJudge(game.id, nextJudge.userId);
 
-  await storage.clearPlayedCards(game.id);
+  await storage.removePlayedCardsFromHands(game.id);
+    await storage.clearPlayedCards(game.id);
   await delay(ROUND_BREAK);
   await startRound(channel, game.id);
 }
@@ -570,12 +583,13 @@ client.on("messageCreate", async (message) => {
 
           if (blackCard && playerPlayed.length < (blackCard.pick || 1)) {
             const hand = await storage.getHand(player.id);
+            const playedCardIds = new Set(playerPlayed.map(p => p.id));
+            const availableHand = hand.filter(c => !playedCardIds.has(c.id));
             const index = num - 1;
 
-            if (index >= 0 && index < hand.length) {
-              const selectedCard = hand[index];
+            if (index >= 0 && index < availableHand.length) {
+              const selectedCard = availableHand[index];
               await storage.playCard(game.id, player.id, selectedCard.id);
-              await storage.removeFromHand(player.id, selectedCard.id);
 
               const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
 
@@ -588,8 +602,9 @@ client.on("messageCreate", async (message) => {
               }
 
               if (remainingToPick > 0) {
-                const updatedHand = await storage.getHand(player.id);
-                const handList = updatedHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+                const newPlayedIds = new Set(Array.from(playedCardIds).concat([selectedCard.id]));
+                const updatedAvailable = hand.filter(c => !newPlayedIds.has(c.id));
+                const handList = updatedAvailable.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
                 await message.author.send({
                   embeds: [
                     new EmbedBuilder()
@@ -659,7 +674,8 @@ client.on("messageCreate", async (message) => {
             if (winner.score >= (game.pointsToWin || 5)) {
               clearRoundTimer(game.id);
               await storage.updateGameStatus(game.id, "finished");
-              await storage.clearPlayedCards(game.id);
+              await storage.removePlayedCardsFromHands(game.id);
+    await storage.clearPlayedCards(game.id);
               const allPlayers = await storage.getPlayers(game.id);
               const scores = allPlayers.map(p => `${p.username}: ${p.score}`).join("\n");
               await message.channel.send({
@@ -677,7 +693,8 @@ client.on("messageCreate", async (message) => {
             const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
             const nextJudge = players[(currentJudgeIndex + 1) % players.length];
             await storage.setGameJudge(game.id, nextJudge.userId);
-            await storage.clearPlayedCards(game.id);
+            await storage.removePlayedCardsFromHands(game.id);
+    await storage.clearPlayedCards(game.id);
             await delay(ROUND_BREAK);
             await startRound(message.channel, game.id);
             return;
@@ -729,6 +746,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
     const nextJudge = players[(currentJudgeIndex + 1) % players.length];
     await storage.setGameJudge(gameId, nextJudge.userId);
+    await storage.removePlayedCardsFromHands(gameId);
     await storage.clearPlayedCards(gameId);
     await startRound(channel, gameId);
     return;
@@ -789,7 +807,8 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
       const currentJudgeIndex = players.findIndex((p: any) => p.userId === currentGame.judgeId);
       const nextJudge = players[(currentJudgeIndex + 1) % players.length];
       await storage.setGameJudge(gameId, nextJudge.userId);
-      await storage.clearPlayedCards(gameId);
+      await storage.removePlayedCardsFromHands(gameId);
+    await storage.clearPlayedCards(gameId);
       await startRound(channel, gameId);
     } catch (e) {
       console.error("Error in judging timer:", e);
@@ -898,7 +917,8 @@ async function startRound(channel: any, gameId: number) {
         const currentJudgeIndex = allPlayers.findIndex((p: any) => p.userId === currentGame.judgeId);
         const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
         await storage.setGameJudge(gameId, nextJudge.userId);
-        await storage.clearPlayedCards(gameId);
+        await storage.removePlayedCardsFromHands(gameId);
+    await storage.clearPlayedCards(gameId);
         await startRound(channel, gameId);
       }
     } catch (e) {

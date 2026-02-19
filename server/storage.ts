@@ -46,6 +46,7 @@ export interface IStorage {
   playCard(gameId: number, playerId: number, cardId: number): Promise<void>;
   getPlayedCards(gameId: number): Promise<(Card & { playerId: number; username: string })[]>;
   clearPlayedCards(gameId: number): Promise<void>;
+  removePlayedCardsFromHands(gameId: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -215,6 +216,21 @@ export class DatabaseStorage implements IStorage {
 
   async clearPlayedCards(gameId: number): Promise<void> {
     await db.delete(playedCards).where(eq(playedCards.gameId, gameId));
+  }
+
+  async removePlayedCardsFromHands(gameId: number): Promise<void> {
+    const played = await db.select({ playerId: playedCards.playerId, cardId: playedCards.cardId })
+      .from(playedCards)
+      .where(eq(playedCards.gameId, gameId));
+
+    for (const pc of played) {
+      const [item] = await db.select().from(hands)
+        .where(and(eq(hands.playerId, pc.playerId), eq(hands.cardId, pc.cardId)))
+        .limit(1);
+      if (item) {
+        await db.delete(hands).where(eq(hands.id, item.id));
+      }
+    }
   }
 }
 
