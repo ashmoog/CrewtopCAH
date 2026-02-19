@@ -590,18 +590,15 @@ client.on("messageCreate", async (message) => {
               if (remainingToPick > 0) {
                 const updatedHand = await storage.getHand(player.id);
                 const handList = updatedHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
-                const handMsg = await message.channel.send({
-                  content: `<@${message.author.id}>`,
+                await message.author.send({
                   embeds: [
                     new EmbedBuilder()
                       .setTitle(`Played: ${selectedCard.text}`)
-                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number to play.`)
+                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number in the game channel to play.`)
                       .setColor(0x2F3136)
                   ]
-                });
-                setTimeout(async () => {
-                  try { await handMsg.delete(); } catch {}
-                }, 15000);
+                }).catch(() => {});
+                await message.channel.send(`${message.author.username} played a card. ${remainingToPick} more to pick.`);
               } else {
                 await message.channel.send(`${message.author.username} has finished playing their cards!`);
               }
