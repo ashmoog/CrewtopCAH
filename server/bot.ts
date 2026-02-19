@@ -46,6 +46,13 @@ const commands = [
         .setDescription('The player to add')
         .setRequired(true)),
   new SlashCommandBuilder()
+    .setName('kick')
+    .setDescription('Kick a player from the game (leader only)')
+    .addUserOption(option =>
+      option.setName('player')
+        .setDescription('The player to kick')
+        .setRequired(true)),
+  new SlashCommandBuilder()
     .setName('score')
     .setDescription('Show current scores'),
   new SlashCommandBuilder()
@@ -361,6 +368,35 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({
       embeds: [new EmbedBuilder().setTitle("Scores").setDescription(scores || "No players yet.")]
     });
+  }
+
+  if (commandName === "kick") {
+    const game = await storage.getGame(channelId!);
+    if (!game) {
+      await interaction.reply({ content: "No active game in this channel.", ephemeral: true });
+      return;
+    }
+
+    const leader = await storage.getPlayer(game.id, user.id);
+    if (!leader || !leader.isVip) {
+      await interaction.reply({ content: "Only the game leader can kick players!", ephemeral: true });
+      return;
+    }
+
+    const targetUser = options.getUser('player')!;
+    if (targetUser.id === user.id) {
+      await interaction.reply({ content: "You can't kick yourself!", ephemeral: true });
+      return;
+    }
+
+    const targetPlayer = await storage.getPlayer(game.id, targetUser.id);
+    if (!targetPlayer) {
+      await interaction.reply({ content: `${targetUser.username} is not in the game.`, ephemeral: true });
+      return;
+    }
+
+    await storage.removePlayer(game.id, targetUser.id);
+    await interaction.reply(`${targetUser.username} has been kicked from the game.`);
   }
 
   if (commandName === "leave") {
