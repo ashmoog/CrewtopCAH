@@ -6,9 +6,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
   ],
-  partials: [Partials.Channel],
 });
 
 const HAND_SIZE = 10;
