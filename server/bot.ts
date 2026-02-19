@@ -11,7 +11,6 @@ const client = new Client({
 
 const HAND_SIZE = 10;
 const ROUND_TIMEOUT = 60_000;
-const POINTS_TO_WIN = 5;
 
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
 
@@ -29,7 +28,13 @@ const commands = [
     .setDescription('Show help for the Cards Against Humanity bot'),
   new SlashCommandBuilder()
     .setName('startgame')
-    .setDescription('Start a new game of Cards Against Humanity'),
+    .setDescription('Start a new game of Cards Against Humanity')
+    .addIntegerOption(option =>
+      option.setName('points')
+        .setDescription('Points needed to win (default: 5)')
+        .setRequired(false)
+        .setMinValue(1)
+        .setMaxValue(25)),
   new SlashCommandBuilder()
     .setName('endgame')
     .setDescription('End the current game'),
@@ -191,7 +196,8 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "A game is already in progress in this channel!", ephemeral: true });
     }
 
-    game = await storage.createGame(guildId!, channelId!);
+    const pointsToWin = options.getInteger('points') || 5;
+    game = await storage.createGame(guildId!, channelId!, pointsToWin);
     await storage.addPlayer(game.id, user.id, user.username, true);
 
     const row = new ActionRowBuilder<ButtonBuilder>()
@@ -203,7 +209,7 @@ client.on("interactionCreate", async (interaction) => {
       embeds: [
         new EmbedBuilder()
           .setTitle("Cards Against Humanity")
-          .setDescription(`**${user.username}** started a new game!\n\nUse \`/add @player\` to add players.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.`)
+          .setDescription(`**${user.username}** started a new game!\n\nUse \`/add @player\` to add players.\nThe leader (**${user.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${pointsToWin}`)
           .setColor(0x000000)
       ],
       components: [row]
@@ -418,7 +424,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
     await channel.send({ embeds: [embed] });
   }
 
-  if (winner.score >= POINTS_TO_WIN) {
+  if (winner.score >= (game.pointsToWin || 5)) {
     clearRoundTimer(game.id);
     await storage.updateGameStatus(game.id, "finished");
     await storage.clearPlayedCards(game.id);
@@ -533,7 +539,7 @@ client.on("messageCreate", async (message) => {
               ]
             });
 
-            if (winner.score >= POINTS_TO_WIN) {
+            if (winner.score >= (game.pointsToWin || 5)) {
               clearRoundTimer(game.id);
               await storage.updateGameStatus(game.id, "finished");
               await storage.clearPlayedCards(game.id);

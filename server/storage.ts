@@ -23,7 +23,7 @@ export interface IStorage {
   getCard(id: number): Promise<Card | undefined>;
 
   // Game
-  createGame(guildId: string, channelId: string): Promise<Game>;
+  createGame(guildId: string, channelId: string, pointsToWin?: number): Promise<Game>;
   getGame(channelId: string): Promise<Game | undefined>;
   updateGameStatus(gameId: number, status: string): Promise<Game>;
   setGameJudge(gameId: number, judgeId: string): Promise<Game>;
@@ -90,11 +90,12 @@ export class DatabaseStorage implements IStorage {
     return card;
   }
 
-  async createGame(guildId: string, channelId: string): Promise<Game> {
+  async createGame(guildId: string, channelId: string, pointsToWin: number = 5): Promise<Game> {
     const [game] = await db.insert(games).values({
       guildId,
       channelId,
       status: "waiting",
+      pointsToWin,
     }).returning();
     return game;
   }

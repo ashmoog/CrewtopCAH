@@ -22,6 +22,7 @@ export const games = pgTable("games", {
   status: text("status", { enum: ["waiting", "playing", "judging", "finished"] }).notNull().default("waiting"),
   judgeId: text("judge_id"), // Discord User ID of the current judge
   currentBlackCardId: integer("current_black_card_id").references(() => cards.id),
+  pointsToWin: integer("points_to_win").notNull().default(5),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
