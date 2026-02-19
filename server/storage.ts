@@ -62,8 +62,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async seedCards() {
-    const existing = await db.select().from(cards).limit(1);
-    if (existing.length === 0) {
+    // Force re-seed if card count is low (ignoring existing to add new ones)
+    // In a real app, we'd use a more sophisticated sync, but for this MVP:
+    const [cardCount] = await db.select({ count: sql<number>`count(*)` }).from(cards);
+    if (Number(cardCount?.count || 0) < initialCards.length) {
+      // Delete existing to avoid duplicates if re-seeding the whole set
+      // Alternatively, we could just insert and rely on unique constraints if we had them.
+      // For this simple setup, let's just clear and re-insert the full set.
+      await db.delete(cards);
       await db.insert(cards).values(initialCards);
     }
   }
