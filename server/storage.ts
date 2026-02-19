@@ -179,11 +179,19 @@ export class DatabaseStorage implements IStorage {
     })
     .from(hands)
     .innerJoin(cards, eq(hands.cardId, cards.id))
-    .where(eq(hands.playerId, playerId));
+    .where(eq(hands.playerId, playerId))
+    .orderBy(sql`RANDOM()`);
   }
 
   async removeFromHand(playerId: number, cardId: number): Promise<void> {
-    await db.delete(hands).where(and(eq(hands.playerId, playerId), eq(hands.cardId, cardId)));
+    // We only want to remove one instance of the card if duplicates exist (though rare in CAH)
+    const [item] = await db.select().from(hands)
+      .where(and(eq(hands.playerId, playerId), eq(hands.cardId, cardId)))
+      .limit(1);
+    
+    if (item) {
+      await db.delete(hands).where(eq(hands.id, item.id));
+    }
   }
 
   async playCard(gameId: number, playerId: number, cardId: number): Promise<void> {
