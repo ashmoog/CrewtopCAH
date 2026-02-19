@@ -42,6 +42,66 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args.shift()?.toLowerCase();
 
+  if (command === "pick") {
+    const game = await storage.getGame(message.channel.id);
+    if (!game || game.status !== "playing") {
+      await message.reply("No active round to pick cards for.");
+      return;
+    }
+
+    if (game.judgeId === message.author.id) {
+      await message.reply("You are the judge this round! You don't pick a card.");
+      return;
+    }
+
+    const player = await storage.getPlayer(game.id, message.author.id);
+    if (!player) {
+      await message.reply("You are not in this game!");
+      return;
+    }
+
+    // Check if already played
+    const played = await storage.getPlayedCards(game.id);
+    if (played.find(p => p.playerId === player.id)) {
+      await message.reply("You have already played a card this round.");
+      return;
+    }
+
+    const index = parseInt(args[0]) - 1;
+    const hand = await storage.getHand(player.id);
+
+    if (isNaN(index) || index < 0 || index >= hand.length) {
+      await message.reply("Invalid card number. Check your hand.");
+      return;
+    }
+
+    const selectedCard = hand[index];
+    await storage.playCard(game.id, player.id, selectedCard.id);
+    await storage.removeFromHand(player.id, selectedCard.id);
+
+    await message.delete().catch(() => {}); // Try to hide the pick
+    await message.channel.send(`${message.author.username} has played a card!`);
+
+    // Check if everyone has played
+    const players = await storage.getPlayers(game.id);
+    const totalPlayersToPlay = players.length - 1; // All except judge
+    const currentlyPlayed = await storage.getPlayedCards(game.id);
+
+    if (currentlyPlayed.length >= totalPlayersToPlay) {
+      await storage.updateGameStatus(game.id, "judging");
+      const cardList = currentlyPlayed.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      
+      await message.channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("All cards are in!")
+            .setDescription(`**Judge:** <@${game.judgeId}>\n\n**Black Card:** ${(await storage.getCard(game.currentBlackCardId!))?.text}\n\n**Options:**\n${cardList}\n\nJudge, pick the winner with \`!judge <number>\``)
+            .setColor(0x00FF00)
+        ]
+      });
+    }
+  }
+
   if (command === "help") {
     await message.reply({
       embeds: [
@@ -144,7 +204,7 @@ client.on("messageCreate", async (message) => {
       embeds: [
         new EmbedBuilder()
           .setTitle("Winner Selected!")
-          .setDescription(`**${winner.username}** wins the round!\n\n"${winnerCard.text}"`)
+          .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${game.currentBlackCardId ? (await storage.getCard(game.currentBlackCardId))?.text : ""}\n**Winning Card:** "${winnerCard.text}"`)
           .setColor(0xFFD700)
       ]
     });
@@ -252,7 +312,7 @@ async function startRound(channel: any, gameId: number) {
     if (p.userId !== game.judgeId) {
       try {
         const user = await client.users.fetch(p.userId);
-        await sendHand(user, p.id, blackCard.text);
+        await sendHand(user, p.id, blackCard.text, channel);
       } catch (e) {
         console.error(`Could not DM user ${p.username}`);
       }
@@ -266,13 +326,13 @@ async function startRound(channel: any, gameId: number) {
       new EmbedBuilder()
         .setTitle("New Round!")
         .setDescription(`**Judge:** ${judgePlayer?.username}\n\n**Black Card:**\n${blackCard.text}`)
-        .setFooter({ text: "Players, check your DMs to pick a card!" })
+        .setFooter({ text: "Players, I've sent your cards to your DMs for privacy. Reply there with !pick <number>." })
         .setColor(0x000000)
     ]
   });
 }
 
-async function sendHand(user: any, playerId: number, blackCardText: string) {
+async function sendHand(user: any, playerId: number, blackCardText: string, channel: any) {
   const hand = await storage.getHand(playerId);
   const description = hand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
   
