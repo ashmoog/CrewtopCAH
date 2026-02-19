@@ -11,6 +11,9 @@ const client = new Client({
 
 const HAND_SIZE = 10;
 const ROUND_TIMEOUT = 60_000;
+const ROUND_BREAK = 5_000;
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
 
@@ -536,6 +539,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
   await storage.setGameJudge(game.id, nextJudge.userId);
 
   await storage.clearPlayedCards(game.id);
+  await delay(ROUND_BREAK);
   await startRound(channel, game.id);
 }
 
@@ -653,6 +657,7 @@ client.on("messageCreate", async (message) => {
             const nextJudge = players[(currentJudgeIndex + 1) % players.length];
             await storage.setGameJudge(game.id, nextJudge.userId);
             await storage.clearPlayedCards(game.id);
+            await delay(ROUND_BREAK);
             await startRound(message.channel, game.id);
             return;
           }
