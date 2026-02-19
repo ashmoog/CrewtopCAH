@@ -11,6 +11,7 @@ const client = new Client({
 
 const HAND_SIZE = 10;
 const ROUND_TIMEOUT = 60_000;
+const POINTS_TO_WIN = 5;
 
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
 
@@ -417,6 +418,23 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
     await channel.send({ embeds: [embed] });
   }
 
+  if (winner.score >= POINTS_TO_WIN) {
+    clearRoundTimer(game.id);
+    await storage.updateGameStatus(game.id, "finished");
+    await storage.clearPlayedCards(game.id);
+    const players = await storage.getPlayers(game.id);
+    const scores = players.map((p: any) => `${p.username}: ${p.score}`).join("\n");
+    await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Game Over!")
+          .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+          .setColor(0xFFD700)
+      ]
+    });
+    return;
+  }
+
   const players = await storage.getPlayers(game.id);
   const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
   const nextJudge = players[(currentJudgeIndex + 1) % players.length];
@@ -514,6 +532,23 @@ client.on("messageCreate", async (message) => {
                   .setColor(0xFFD700)
               ]
             });
+
+            if (winner.score >= POINTS_TO_WIN) {
+              clearRoundTimer(game.id);
+              await storage.updateGameStatus(game.id, "finished");
+              await storage.clearPlayedCards(game.id);
+              const allPlayers = await storage.getPlayers(game.id);
+              const scores = allPlayers.map(p => `${p.username}: ${p.score}`).join("\n");
+              await message.channel.send({
+                embeds: [
+                  new EmbedBuilder()
+                    .setTitle("Game Over!")
+                    .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+                    .setColor(0xFFD700)
+                ]
+              });
+              return;
+            }
 
             const players = await storage.getPlayers(game.id);
             const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
