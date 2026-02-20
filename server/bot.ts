@@ -133,8 +133,10 @@ client.on("interactionCreate", async (interaction) => {
       const played = await storage.getPlayedCards(game.id);
       const playerPlayed = played.filter(p => p.playerId === player.id);
       const playedCardIds = new Set(playerPlayed.map(p => p.id));
-      const availableHand = hand.filter(c => !playedCardIds.has(c.id));
-      const description = availableHand.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      const description = hand.map((c, i) => {
+        if (playedCardIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
+        return `**${i + 1}.** ${c.text}`;
+      }).join("\n");
 
       const pickNeeded = (blackCard?.pick || 1) - playerPlayed.length;
       const pickInfo = pickNeeded > 0 ? `Pick ${pickNeeded} card(s).` : "You've already played your cards this round.";
@@ -378,24 +380,29 @@ client.on("interactionCreate", async (interaction) => {
 
     const index = options.getInteger('number')! - 1;
     const hand = await storage.getHand(player.id);
-
     const playedCardIds = new Set(playerPlayed.map(p => p.id));
-    const availableHand = hand.filter(c => !playedCardIds.has(c.id));
 
-    if (isNaN(index) || index < 0 || index >= availableHand.length) {
+    if (isNaN(index) || index < 0 || index >= hand.length) {
       await interaction.reply({ content: "Invalid card number. Click View Cards to check your hand.", ephemeral: true });
       return;
     }
 
-    const selectedCard = availableHand[index];
+    const selectedCard = hand[index];
+    if (playedCardIds.has(selectedCard.id)) {
+      await interaction.reply({ content: "You already played that card. Pick a different one.", ephemeral: true });
+      return;
+    }
+
     await storage.playCard(game.id, player.id, selectedCard.id);
 
     const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
 
     if (remainingToPick > 0) {
       const newPlayedIds = new Set(Array.from(playedCardIds).concat([selectedCard.id]));
-      const updatedAvailable = hand.filter(c => !newPlayedIds.has(c.id));
-      const handList = updatedAvailable.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      const handList = hand.map((c, i) => {
+        if (newPlayedIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
+        return `**${i + 1}.** ${c.text}`;
+      }).join("\n");
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -584,11 +591,14 @@ client.on("messageCreate", async (message) => {
           if (blackCard && playerPlayed.length < (blackCard.pick || 1)) {
             const hand = await storage.getHand(player.id);
             const playedCardIds = new Set(playerPlayed.map(p => p.id));
-            const availableHand = hand.filter(c => !playedCardIds.has(c.id));
             const index = num - 1;
 
-            if (index >= 0 && index < availableHand.length) {
-              const selectedCard = availableHand[index];
+            if (index >= 0 && index < hand.length) {
+              const selectedCard = hand[index];
+              if (playedCardIds.has(selectedCard.id)) {
+                try { if (message.deletable) await message.delete(); } catch (e) {}
+                return;
+              }
               await storage.playCard(game.id, player.id, selectedCard.id);
 
               const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
@@ -603,8 +613,10 @@ client.on("messageCreate", async (message) => {
 
               if (remainingToPick > 0) {
                 const newPlayedIds = new Set(Array.from(playedCardIds).concat([selectedCard.id]));
-                const updatedAvailable = hand.filter(c => !newPlayedIds.has(c.id));
-                const handList = updatedAvailable.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+                const handList = hand.map((c, i) => {
+                  if (newPlayedIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
+                  return `**${i + 1}.** ${c.text}`;
+                }).join("\n");
                 await message.author.send({
                   embeds: [
                     new EmbedBuilder()
