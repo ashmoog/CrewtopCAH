@@ -504,7 +504,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
     if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
     grouped[pc.playerId].push(pc);
   });
-  const playerIds = Object.keys(grouped);
+  const playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
 
   if (index < 0 || index >= playerIds.length) {
     if (source.reply) {
@@ -650,7 +650,7 @@ client.on("messageCreate", async (message) => {
           if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
           grouped[pc.playerId].push(pc);
         });
-        const playerIds = Object.keys(grouped);
+        const playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
 
         if (index >= 0 && index < playerIds.length) {
           clearRoundTimer(game.id);
@@ -772,11 +772,12 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     playerNameMap[c.playerId] = c.username;
   });
 
-  const optionsList = Object.values(groupedPlayed).map((texts, i) => `**${i + 1}.** ${texts.join(" / ")}`).join("\n");
+  const sortedPlayerIds = Object.keys(groupedPlayed).sort((a, b) => Number(a) - Number(b)).map(Number);
+  const optionsList = sortedPlayerIds.map((pid, i) => `**${i + 1}.** ${groupedPlayed[pid].join(" / ")}`).join("\n");
 
   const allPlayers = await storage.getPlayers(gameId);
-  const playedPlayerIds = new Set(Object.keys(groupedPlayed).map(Number));
-  const submitted: string[] = Object.values(playerNameMap);
+  const playedPlayerIds = new Set(sortedPlayerIds);
+  const submitted: string[] = sortedPlayerIds.map(pid => playerNameMap[pid]);
   const missed: string[] = [];
   for (const p of allPlayers) {
     if (p.userId === game.judgeId) continue;
