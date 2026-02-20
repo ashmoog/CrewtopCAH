@@ -508,8 +508,11 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    const wasJudge = game.judgeId === targetUser.id;
     await storage.removePlayer(game.id, targetUser.id);
     await interaction.reply(`${targetUser.username} has been booted from the game.`);
+
+    await handlePlayerRemoval(interaction.channel, game, wasJudge);
   }
 
   if (commandName === "leave") {
@@ -523,10 +526,71 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: "You are not in the game.", ephemeral: true });
       return;
     }
+    const wasJudge = game.judgeId === user.id;
     await storage.removePlayer(game.id, user.id);
     await interaction.reply(`${user.username} left the game.`);
+
+    await handlePlayerRemoval(interaction.channel, game, wasJudge);
   }
 });
+
+async function handlePlayerRemoval(channel: any, game: any, wasJudge: boolean) {
+  try {
+    const remainingPlayers = await storage.getPlayers(game.id);
+
+    if (remainingPlayers.length < 2) {
+      clearRoundTimer(game.id);
+      await storage.updateGameStatus(game.id, "finished");
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Game Over")
+            .setDescription("Not enough players to continue. The game has ended.")
+            .setColor(0xFF0000)
+        ]
+      });
+      return;
+    }
+
+    if (game.status === "waiting") return;
+
+    if (wasJudge) {
+      clearRoundTimer(game.id);
+      await storage.removePlayedCardsFromHands(game.id);
+      await storage.clearPlayedCards(game.id);
+      const nextJudgeIndex = 0;
+      const nextJudge = remainingPlayers[nextJudgeIndex];
+      await storage.setGameJudge(game.id, nextJudge.userId);
+      await channel.send("The judge left! Starting a new round with a new judge...");
+      await delay(ROUND_BREAK);
+      await startRound(channel, game.id);
+      return;
+    }
+
+    if (game.status === "playing") {
+      const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+      if (blackCard) {
+        await checkAllPlayed(channel, game.id, blackCard);
+      }
+    }
+
+    if (game.status === "judging") {
+      const currentlyPlayed = await storage.getPlayedCards(game.id);
+      if (currentlyPlayed.length === 0) {
+        await channel.send("No cards left to judge. Starting a new round...");
+        const players = await storage.getPlayers(game.id);
+        const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
+        const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+        await storage.setGameJudge(game.id, nextJudge.userId);
+        await storage.clearPlayedCards(game.id);
+        await delay(ROUND_BREAK);
+        await startRound(channel, game.id);
+      }
+    }
+  } catch (e) {
+    console.error("Error in handlePlayerRemoval:", e);
+  }
+}
 
 async function handleJudgeSelection(source: any, game: any, index: number) {
   try {

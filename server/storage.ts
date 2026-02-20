@@ -35,6 +35,7 @@ export interface IStorage {
   getPlayer(gameId: number, userId: string): Promise<Player | undefined>;
   getPlayers(gameId: number): Promise<Player[]>;
   removePlayer(gameId: number, userId: string): Promise<void>;
+  removePlayerData(playerId: number): Promise<void>;
   incrementScore(playerId: number): Promise<Player>;
 
   // Hands
@@ -152,7 +153,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async removePlayer(gameId: number, userId: string): Promise<void> {
+    const player = await this.getPlayer(gameId, userId);
+    if (player) {
+      await this.removePlayerData(player.id);
+    }
     await db.delete(players).where(and(eq(players.gameId, gameId), eq(players.userId, userId)));
+  }
+
+  async removePlayerData(playerId: number): Promise<void> {
+    await db.delete(hands).where(eq(hands.playerId, playerId));
+    await db.delete(playedCards).where(eq(playedCards.playerId, playerId));
   }
 
   async incrementScore(playerId: number): Promise<Player> {
