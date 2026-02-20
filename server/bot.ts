@@ -497,80 +497,83 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 async function handleJudgeSelection(source: any, game: any, index: number) {
-  const playedCards = await storage.getPlayedCards(game.id);
+  try {
+    const playedCards = await storage.getPlayedCards(game.id);
 
-  const grouped: { [playerId: number]: any[] } = {};
-  playedCards.forEach(pc => {
-    if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
-    grouped[pc.playerId].push(pc);
-  });
-  const playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
+    const grouped: { [playerId: number]: any[] } = {};
+    playedCards.forEach(pc => {
+      if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
+      grouped[pc.playerId].push(pc);
+    });
+    const playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
 
-  if (index < 0 || index >= playerIds.length) {
-    if (source.reply) {
-      await source.reply({ content: "Invalid selection.", ephemeral: true });
+    if (index < 0 || index >= playerIds.length) {
+      if (source.reply) {
+        await source.reply({ content: "Invalid selection.", ephemeral: true });
+      }
+      return;
     }
-    return;
-  }
 
-  const winnerId = parseInt(playerIds[index]);
-  const winnerCard = playedCards.find(c => c.playerId === winnerId);
+    const winnerId = parseInt(playerIds[index]);
+    const winnerCard = playedCards.find(c => c.playerId === winnerId);
 
-  if (!winnerCard) {
-    if (source.reply) {
-      await source.reply({ content: "Could not determine winner.", ephemeral: true });
+    if (!winnerCard) {
+      if (source.reply) {
+        await source.reply({ content: "Could not determine winner.", ephemeral: true });
+      }
+      return;
     }
-    return;
-  }
 
-  const winner = await storage.incrementScore(winnerCard.playerId);
-  const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
-  const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
+    const winner = await storage.incrementScore(winnerCard.playerId);
+    const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+    const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
 
-  const allPlayers = await storage.getPlayers(game.id);
-  const scoreList = allPlayers.sort((a: any, b: any) => b.score - a.score).map((p: any) => `${p.username}: **${p.score}**`).join("\n");
+    const allPlayers = await storage.getPlayers(game.id);
+    const scoreList = allPlayers.sort((a: any, b: any) => b.score - a.score).map((p: any) => `${p.username}: **${p.score}**`).join("\n");
 
-  const embed = new EmbedBuilder()
-    .setTitle("Winner Selected!")
-    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}`)
-    .setColor(0xFFD700);
+    const embed = new EmbedBuilder()
+      .setTitle("Winner Selected!")
+      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}`)
+      .setColor(0xFFD700);
 
-  const channel = source.channel || source;
-  if (source.reply && typeof source.reply === 'function' && source.isChatInputCommand?.()) {
-    await source.reply({ embeds: [embed] });
-  } else if (source.reply && typeof source.reply === 'function') {
-    await source.reply({ embeds: [embed] });
-  } else {
-    await channel.send({ embeds: [embed] });
-  }
+    const channel = source.channel || source;
+    if (source.reply && typeof source.reply === 'function' && source.isChatInputCommand?.()) {
+      await source.reply({ embeds: [embed] });
+    } else if (source.reply && typeof source.reply === 'function') {
+      await source.reply({ embeds: [embed] });
+    } else {
+      await channel.send({ embeds: [embed] });
+    }
 
-  if (winner.score >= (game.pointsToWin || 5)) {
-    clearRoundTimer(game.id);
-    await storage.updateGameStatus(game.id, "finished");
+    if (winner.score >= (game.pointsToWin || 5)) {
+      clearRoundTimer(game.id);
+      await storage.updateGameStatus(game.id, "finished");
+      await storage.removePlayedCardsFromHands(game.id);
+      await storage.clearPlayedCards(game.id);
+      const players = await storage.getPlayers(game.id);
+      const scores = players.map((p: any) => `${p.username}: ${p.score}`).join("\n");
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Game Over!")
+            .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+            .setColor(0xFFD700)
+        ]
+      });
+      return;
+    }
+
+    const players = await storage.getPlayers(game.id);
+    const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
+    const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+    await storage.setGameJudge(game.id, nextJudge.userId);
     await storage.removePlayedCardsFromHands(game.id);
     await storage.clearPlayedCards(game.id);
-    const players = await storage.getPlayers(game.id);
-    const scores = players.map((p: any) => `${p.username}: ${p.score}`).join("\n");
-    await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("Game Over!")
-          .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
-          .setColor(0xFFD700)
-      ]
-    });
-    return;
+    await delay(ROUND_BREAK);
+    await startRound(channel, game.id);
+  } catch (e) {
+    console.error("Error in handleJudgeSelection:", e);
   }
-
-  const players = await storage.getPlayers(game.id);
-  const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
-  const nextJudge = players[(currentJudgeIndex + 1) % players.length];
-  await storage.setGameJudge(game.id, nextJudge.userId);
-
-  await storage.removePlayedCardsFromHands(game.id);
-    await storage.clearPlayedCards(game.id);
-  await delay(ROUND_BREAK);
-  await startRound(channel, game.id);
 }
 
 client.on("messageCreate", async (message) => {
@@ -667,49 +670,53 @@ client.on("messageCreate", async (message) => {
           const winnerCard = playedCards.find(c => c.playerId === winnerId);
 
           if (winnerCard) {
-            const winner = await storage.incrementScore(winnerCard.playerId);
-            const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
-            const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
+            try {
+              const winner = await storage.incrementScore(winnerCard.playerId);
+              const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+              const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
 
-            const roundPlayers = await storage.getPlayers(game.id);
-            const roundScoreList = roundPlayers.sort((a, b) => b.score - a.score).map(p => `${p.username}: **${p.score}**`).join("\n");
+              const roundPlayers = await storage.getPlayers(game.id);
+              const roundScoreList = roundPlayers.sort((a, b) => b.score - a.score).map(p => `${p.username}: **${p.score}**`).join("\n");
 
-            await message.channel.send({
-              embeds: [
-                new EmbedBuilder()
-                  .setTitle("Winner Selected!")
-                  .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}`)
-                  .setColor(0xFFD700)
-              ]
-            });
-
-            if (winner.score >= (game.pointsToWin || 5)) {
-              clearRoundTimer(game.id);
-              await storage.updateGameStatus(game.id, "finished");
-              await storage.removePlayedCardsFromHands(game.id);
-    await storage.clearPlayedCards(game.id);
-              const allPlayers = await storage.getPlayers(game.id);
-              const scores = allPlayers.map(p => `${p.username}: ${p.score}`).join("\n");
               await message.channel.send({
                 embeds: [
                   new EmbedBuilder()
-                    .setTitle("Game Over!")
-                    .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+                    .setTitle("Winner Selected!")
+                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}`)
                     .setColor(0xFFD700)
                 ]
               });
-              return;
-            }
 
-            const players = await storage.getPlayers(game.id);
-            const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
-            const nextJudge = players[(currentJudgeIndex + 1) % players.length];
-            await storage.setGameJudge(game.id, nextJudge.userId);
-            await storage.removePlayedCardsFromHands(game.id);
-    await storage.clearPlayedCards(game.id);
-            await delay(ROUND_BREAK);
-            await startRound(message.channel, game.id);
-            return;
+              if (winner.score >= (game.pointsToWin || 5)) {
+                clearRoundTimer(game.id);
+                await storage.updateGameStatus(game.id, "finished");
+                await storage.removePlayedCardsFromHands(game.id);
+                await storage.clearPlayedCards(game.id);
+                const allPlayers = await storage.getPlayers(game.id);
+                const scores = allPlayers.map(p => `${p.username}: ${p.score}`).join("\n");
+                await message.channel.send({
+                  embeds: [
+                    new EmbedBuilder()
+                      .setTitle("Game Over!")
+                      .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+                      .setColor(0xFFD700)
+                  ]
+                });
+                return;
+              }
+
+              const players = await storage.getPlayers(game.id);
+              const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
+              const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+              await storage.setGameJudge(game.id, nextJudge.userId);
+              await storage.removePlayedCardsFromHands(game.id);
+              await storage.clearPlayedCards(game.id);
+              await delay(ROUND_BREAK);
+              await startRound(message.channel, game.id);
+              return;
+            } catch (e) {
+              console.error("Error in message-based judge flow:", e);
+            }
           }
         }
       }
