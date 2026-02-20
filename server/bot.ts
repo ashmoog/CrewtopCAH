@@ -208,6 +208,7 @@ client.on("interactionCreate", async (interaction) => {
         const updatedEmbed = EmbedBuilder.from(originalEmbed)
           .setDescription(`${originalEmbed.description}\n\n**Players (${players.length}):** ${playerList}`);
         await interaction.update({ embeds: [updatedEmbed], components: interaction.message.components as any });
+        await interaction.channel?.send(`**${user.username}** joined the game! They'll get cards at the start of the next round.`);
       } else {
         const leader = players.find(p => p.isVip);
         const updatedEmbed = new EmbedBuilder()
