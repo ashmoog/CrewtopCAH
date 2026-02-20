@@ -95,12 +95,44 @@ export async function startBot() {
       console.log('Successfully reloaded application (/) commands.');
     }
 
+    client.on("error", (error) => {
+      console.error("Discord client error:", error);
+    });
+
+    client.on("warn", (warning) => {
+      console.warn("Discord client warning:", warning);
+    });
+
+    client.on("disconnect", () => {
+      console.log("Bot disconnected. Attempting to reconnect...");
+    });
+
+    client.on("shardDisconnect", (event, shardId) => {
+      console.log(`Shard ${shardId} disconnected (code ${event.code}). Will auto-reconnect.`);
+    });
+
+    client.on("shardReconnecting", (shardId) => {
+      console.log(`Shard ${shardId} reconnecting...`);
+    });
+
+    client.on("shardResume", (shardId) => {
+      console.log(`Shard ${shardId} resumed.`);
+    });
+
     await client.login(process.env.DISCORD_TOKEN);
     console.log(`Logged in as ${client.user?.tag}!`);
   } catch (error) {
     console.error("Failed to login or register commands:", error);
   }
 }
+
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled promise rejection:", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+});
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton()) {
