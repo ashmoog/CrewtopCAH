@@ -98,6 +98,10 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+
+      setInterval(() => {
+        fetch(`http://0.0.0.0:${port}/api/stats`).catch(() => {});
+      }, 5 * 60 * 1000);
     },
   );
 })();
