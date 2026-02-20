@@ -630,7 +630,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
 
     const embed = new EmbedBuilder()
       .setTitle("Winner Selected!")
-      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}`)
+      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
       .setColor(0xFFD700);
 
     const channel = source.channel || source;
@@ -779,7 +779,7 @@ client.on("messageCreate", async (message) => {
                 embeds: [
                   new EmbedBuilder()
                     .setTitle("Winner Selected!")
-                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}`)
+                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
                     .setColor(0xFFD700)
                 ]
               });
