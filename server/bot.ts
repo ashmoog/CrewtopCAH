@@ -19,7 +19,10 @@ const roundTimers: Map<number, NodeJS.Timeout> = new Map();
 const usedBlackCards: Map<number, number[]> = new Map();
 
 function formatCardText(text: string): string {
-  return text.replace(/\\_/g, '_');
+  return text.replace(/(\\_)+/g, (match) => {
+    const count = (match.match(/\\_/g) || []).length;
+    return '`' + '_'.repeat(count) + '`';
+  });
 }
 
 function clearRoundTimer(gameId: number) {
