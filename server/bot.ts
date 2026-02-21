@@ -16,14 +16,6 @@ const ROUND_BREAK = 5_000;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
-const usedBlackCards: Map<number, number[]> = new Map();
-
-function formatCardText(text: string): string {
-  return text.replace(/(\\_)+/g, (match) => {
-    const count = (match.match(/\\_/g) || []).length;
-    return '`' + '_'.repeat(count) + '`';
-  });
-}
 
 function clearRoundTimer(gameId: number) {
   const existing = roundTimers.get(gameId);
@@ -185,7 +177,7 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [
           new EmbedBuilder()
             .setTitle("Your Hand")
-            .setDescription(`## ${formatCardText(blackCard?.text || "None")}\n\n${description || "Empty hand."}\n\n${pickInfo}\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setDescription(`## ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\n${pickInfo}\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
@@ -376,7 +368,6 @@ client.on("interactionCreate", async (interaction) => {
     await storage.updateGameStatus(game.id, "finished");
     await storage.removePlayedCardsFromHands(game.id);
     await storage.clearPlayedCards(game.id);
-    usedBlackCards.delete(game.id);
 
     await interaction.reply({
       embeds: [
@@ -449,7 +440,7 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [
           new EmbedBuilder()
             .setTitle(`Played: ${selectedCard.text}`)
-            .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${formatCardText(blackCard.text)}\n\n${handList}\n\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
@@ -551,7 +542,6 @@ async function handlePlayerRemoval(channel: any, game: any, wasJudge: boolean) {
     if (remainingPlayers.length < 2) {
       clearRoundTimer(game.id);
       await storage.updateGameStatus(game.id, "finished");
-      usedBlackCards.delete(game.id);
       await channel.send({
         embeds: [
           new EmbedBuilder()
@@ -640,7 +630,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
 
     const embed = new EmbedBuilder()
       .setTitle("Winner Selected!")
-      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${formatCardText(blackCard?.text || "")}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
+      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
       .setColor(0xFFD700);
 
     const channel = source.channel || source;
@@ -657,7 +647,6 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
       await storage.updateGameStatus(game.id, "finished");
       await storage.removePlayedCardsFromHands(game.id);
       await storage.clearPlayedCards(game.id);
-      usedBlackCards.delete(game.id);
       const players = await storage.getPlayers(game.id);
       const scores = players.map((p: any) => `${p.username}: ${p.score}`).join("\n");
       await channel.send({
@@ -732,7 +721,7 @@ client.on("messageCreate", async (message) => {
                   embeds: [
                     new EmbedBuilder()
                       .setTitle(`Played: ${selectedCard.text}`)
-                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${formatCardText(blackCard.text)}\n\n${handList}\n\nType the number in the game channel to play.`)
+                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number in the game channel to play.`)
                       .setColor(0x2F3136)
                   ]
                 }).catch(() => {
@@ -790,7 +779,7 @@ client.on("messageCreate", async (message) => {
                 embeds: [
                   new EmbedBuilder()
                     .setTitle("Winner Selected!")
-                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${formatCardText(blackCard?.text || "")}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
+                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
                     .setColor(0xFFD700)
                 ]
               });
@@ -800,7 +789,6 @@ client.on("messageCreate", async (message) => {
                 await storage.updateGameStatus(game.id, "finished");
                 await storage.removePlayedCardsFromHands(game.id);
                 await storage.clearPlayedCards(game.id);
-                usedBlackCards.delete(game.id);
                 const allPlayers = await storage.getPlayers(game.id);
                 const scores = allPlayers.map(p => `${p.username}: ${p.score}`).join("\n");
                 await message.channel.send({
@@ -911,7 +899,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     embeds: [
       new EmbedBuilder()
         .setTitle("All cards are in!")
-        .setDescription(`**Judge:** <@${game.judgeId}>\n\n## ${formatCardText(blackCard?.text || "")}\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+        .setDescription(`**Judge:** <@${game.judgeId}>\n\n## ${blackCard?.text}\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
         .setColor(0x00FF00)
     ]
   });
@@ -950,20 +938,11 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
 async function startRound(channel: any, gameId: number) {
   clearRoundTimer(gameId);
   await storage.updateGameStatus(gameId, "playing");
-  const excludeIds = usedBlackCards.get(gameId) || [];
-  let blackCard = await storage.getBlackCard(excludeIds);
+  const blackCard = await storage.getBlackCard();
 
   if (!blackCard) {
-    usedBlackCards.delete(gameId);
-    blackCard = await storage.getBlackCard();
-    if (!blackCard) {
-      await channel.send("Error: Out of black cards!");
-      return;
-    }
-    usedBlackCards.set(gameId, [blackCard.id]);
-  } else {
-    excludeIds.push(blackCard.id);
-    usedBlackCards.set(gameId, excludeIds);
+    await channel.send("Error: Out of black cards!");
+    return;
   }
 
   await storage.setGameBlackCard(gameId, blackCard.id);
@@ -998,7 +977,7 @@ async function startRound(channel: any, gameId: number) {
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
-        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n## ${formatCardText(blackCard.text)}`)
+        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n## ${blackCard.text}`)
         .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
