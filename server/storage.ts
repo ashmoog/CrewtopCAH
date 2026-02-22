@@ -39,6 +39,7 @@ export interface IStorage {
   incrementScore(playerId: number): Promise<Player>;
 
   // Hands
+  getAllHandCardIds(gameId: number): Promise<number[]>;
   addToHand(playerId: number, cardId: number): Promise<void>;
   getHand(playerId: number): Promise<(Card & { handId: number })[]>;
   removeFromHand(playerId: number, cardId: number): Promise<void>;
@@ -171,6 +172,14 @@ export class DatabaseStorage implements IStorage {
       .where(eq(players.id, playerId))
       .returning();
     return player;
+  }
+
+  async getAllHandCardIds(gameId: number): Promise<number[]> {
+    const result = await db.select({ cardId: hands.cardId })
+      .from(hands)
+      .innerJoin(players, eq(hands.playerId, players.id))
+      .where(eq(players.gameId, gameId));
+    return result.map(r => r.cardId);
   }
 
   async addToHand(playerId: number, cardId: number): Promise<void> {

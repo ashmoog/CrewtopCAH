@@ -1,5 +1,8 @@
 import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { storage } from "./storage";
+import { db } from "./db";
+import { playedCards as playedCardsTable } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 
 const client = new Client({
   intents: [
@@ -241,10 +244,12 @@ client.on("interactionCreate", async (interaction) => {
       const judge = players[Math.floor(Math.random() * players.length)];
       await storage.setGameJudge(game.id, judge.userId);
 
+      const dealtCardIds: number[] = [];
       for (const p of players) {
-        const cards = await storage.getWhiteCards(HAND_SIZE);
+        const cards = await storage.getWhiteCards(HAND_SIZE, dealtCardIds);
         for (const card of cards) {
           await storage.addToHand(p.id, card.id);
+          dealtCardIds.push(card.id);
         }
       }
 
@@ -840,10 +845,27 @@ async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
 async function transitionToJudging(channel: any, gameId: number, blackCard: any, game: any) {
   await storage.updateGameStatus(gameId, "judging");
 
+  const requiredPicks = blackCard?.pick || 1;
   const currentlyPlayed = await storage.getPlayedCards(gameId);
 
-  if (currentlyPlayed.length === 0) {
-    await channel.send("No one played any cards this round. Skipping to next round...");
+  const playerPlayedCount: { [playerId: number]: number } = {};
+  currentlyPlayed.forEach(c => {
+    playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
+  });
+
+  const incompletePlayerIds = Object.keys(playerPlayedCount)
+    .filter(pid => playerPlayedCount[Number(pid)] < requiredPicks)
+    .map(Number);
+  for (const pid of incompletePlayerIds) {
+    await db.delete(playedCardsTable).where(
+      and(eq(playedCardsTable.gameId, gameId), eq(playedCardsTable.playerId, pid))
+    );
+  }
+
+  const validPlayed = await storage.getPlayedCards(gameId);
+
+  if (validPlayed.length === 0) {
+    await channel.send("No one played enough cards this round. Skipping to next round...");
     const players = await storage.getPlayers(gameId);
     const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
     const nextJudge = players[(currentJudgeIndex + 1) % players.length];
@@ -856,7 +878,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
 
   const groupedPlayed: { [playerId: number]: string[] } = {};
   const playerNameMap: { [playerId: number]: string } = {};
-  currentlyPlayed.forEach(c => {
+  validPlayed.forEach(c => {
     if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
     groupedPlayed[c.playerId].push(c.text);
     playerNameMap[c.playerId] = c.username;
@@ -934,12 +956,15 @@ async function startRound(channel: any, gameId: number) {
   await storage.setGameBlackCard(gameId, blackCard.id);
 
   const players = await storage.getPlayers(gameId);
+  const existingHandCardIds = await storage.getAllHandCardIds(gameId);
+  const excludeIds = [...existingHandCardIds];
   for (const p of players) {
     const hand = await storage.getHand(p.id);
     if (hand.length < HAND_SIZE) {
-      const newCards = await storage.getWhiteCards(HAND_SIZE - hand.length);
+      const newCards = await storage.getWhiteCards(HAND_SIZE - hand.length, excludeIds);
       for (const card of newCards) {
         await storage.addToHand(p.id, card.id);
+        excludeIds.push(card.id);
       }
     }
   }
@@ -963,7 +988,7 @@ async function startRound(channel: any, gameId: number) {
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
-        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n## ${blackCard.text}`)
+        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n## ${blackCard.text}${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
         .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
@@ -980,28 +1005,39 @@ async function startRound(channel: any, gameId: number) {
       if (!currentBlackCard) return;
 
       const playedCards = await storage.getPlayedCards(gameId);
+      const requiredPicks = currentBlackCard.pick || 1;
       if (playedCards.length > 0) {
         const allPlayers = await storage.getPlayers(gameId);
-        const playedPlayerIds = new Set(playedCards.map(c => c.playerId));
+        const playerPlayedCount: { [playerId: number]: number } = {};
+        playedCards.forEach(c => {
+          playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
+        });
         const submitted: string[] = [];
+        const partial: string[] = [];
         const missed: string[] = [];
         for (const p of allPlayers) {
           if (p.userId === currentGame.judgeId) continue;
           const hand = await storage.getHand(p.id);
-          if (hand.length === 0 && !playedPlayerIds.has(p.id)) continue;
-          if (playedPlayerIds.has(p.id)) {
+          const count = playerPlayedCount[p.id] || 0;
+          if (hand.length === 0 && count === 0) continue;
+          if (count >= requiredPicks) {
             submitted.push(p.username);
+          } else if (count > 0) {
+            partial.push(p.username);
+            missed.push(p.username);
           } else {
             missed.push(p.username);
           }
         }
         const submittedText = submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "";
-        const missedText = missed.length > 0 ? `**Didn't make it:** ${missed.join(", ")}` : "";
+        const partialText = partial.length > 0 ? `**Incomplete (not enough cards):** ${partial.join(", ")}` : "";
+        const missedOnly = missed.filter(m => !partial.includes(m));
+        const missedText = missedOnly.length > 0 ? `**Didn't play:** ${missedOnly.join(", ")}` : "";
         await channel.send({
           embeds: [
             new EmbedBuilder()
               .setTitle("Time's Up!")
-              .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${submittedText}\n${missedText}`.trim())
+              .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${submittedText}\n${partialText}\n${missedText}`.trim())
               .setColor(0xFF6600)
           ]
         });
