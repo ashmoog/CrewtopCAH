@@ -208,7 +208,7 @@ client.on("interactionCreate", async (interaction) => {
         const updatedEmbed = EmbedBuilder.from(originalEmbed)
           .setDescription(`${originalEmbed.description}\n\n**Players (${players.length}):** ${playerList}`);
         await interaction.update({ embeds: [updatedEmbed], components: interaction.message.components as any });
-        await interaction.channel?.send(`**${user.username}** joined the game! They'll get cards at the start of the next round.`);
+        await (interaction.channel as any)?.send(`**${user.username}** joined the game! They'll get cards at the start of the next round.`);
       } else {
         const leader = players.find(p => p.isVip);
         const updatedEmbed = new EmbedBuilder()
@@ -447,7 +447,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     } else {
       await interaction.reply({ content: `You played your final card: ${selectedCard.text}`, ephemeral: true });
-      await interaction.channel?.send(`${user.username} has finished playing their cards!`);
+      await (interaction.channel as any)?.send(`${user.username} has finished playing their cards!`);
     }
 
     await checkAllPlayed(interaction.channel, game.id, blackCard);
@@ -925,7 +925,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
       const nextJudge = players[(currentJudgeIndex + 1) % players.length];
       await storage.setGameJudge(gameId, nextJudge.userId);
       await storage.removePlayedCardsFromHands(gameId);
-    await storage.clearPlayedCards(gameId);
+      await storage.clearPlayedCards(gameId);
       await startRound(channel, gameId);
     } catch (e) {
       console.error("Error in judging timer:", e);
@@ -1035,7 +1035,7 @@ async function startRound(channel: any, gameId: number) {
         const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
         await storage.setGameJudge(gameId, nextJudge.userId);
         await storage.removePlayedCardsFromHands(gameId);
-    await storage.clearPlayedCards(gameId);
+        await storage.clearPlayedCards(gameId);
         await startRound(channel, gameId);
       }
     } catch (e) {
