@@ -712,21 +712,7 @@ client.on("messageCreate", async (message) => {
               }
 
               if (remainingToPick > 0) {
-                const newPlayedIds = new Set(Array.from(playedCardIds).concat([selectedCard.id]));
-                const handList = hand.map((c, i) => {
-                  if (newPlayedIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
-                  return `**${i + 1}.** ${c.text}`;
-                }).join("\n");
-                await message.author.send({
-                  embeds: [
-                    new EmbedBuilder()
-                      .setTitle(`Played: ${selectedCard.text}`)
-                      .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number in the game channel to play.`)
-                      .setColor(0x2F3136)
-                  ]
-                }).catch(() => {
-                  message.channel.send({ content: `${message.author.username} played a card. ${remainingToPick} more to pick.` });
-                });
+                await message.channel.send({ content: `${message.author.username} played a card. ${remainingToPick} more to pick.` });
               } else {
                 await message.channel.send(`${message.author.username} has finished playing their cards!`);
               }
