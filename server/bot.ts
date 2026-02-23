@@ -45,8 +45,8 @@ function renderHandEmbed(hand: { text: string }[], selectedIdxs: number[], pickC
   });
 
   return new EmbedBuilder()
-    .setTitle("Your Hand")
-    .setDescription(`**${prettyBlanks(blackCardText)}**\n\n${lines.join("\n")}`)
+    .setTitle(prettyBlanks(blackCardText))
+    .setDescription(lines.join("\n"))
     .setFooter({ text: `Type ONE number per message (e.g. "1"). Selected: ${selectedIdxs.length}/${pickCount}. Type "reset" to start over.` })
     .setColor(0x2F3136);
 }
@@ -785,7 +785,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
 
     const embed = new EmbedBuilder()
       .setTitle("Winner Selected!")
-      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${prettyBlanks(blackCard?.text || "")}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
+      .setDescription(`${prettyBlanks(blackCard?.text || "")}\n\n**${winner.username}** wins the round!\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
       .setColor(0xFFD700);
 
     const channel = source.channel || source;
@@ -949,8 +949,8 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     await channel.send({
       embeds: [
         new EmbedBuilder()
-          .setTitle("All cards are in!")
-          .setDescription(`**Judge:** <@${game.judgeId}>\n\n**${prettyBlanks(blackCard?.text || "")}**\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+          .setTitle(prettyBlanks(blackCard?.text || ""))
+          .setDescription(`**Judge:** <@${game.judgeId}>\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
           .setColor(0x00FF00)
       ]
     });
@@ -1043,8 +1043,8 @@ async function startRound(channel: any, gameId: number) {
   await channel.send({
     embeds: [
       new EmbedBuilder()
-        .setTitle("New Round!")
-        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n**${prettyBlanks(blackCard.text)}**${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
+        .setTitle(prettyBlanks(blackCard.text))
+        .setDescription(`**Judge:** <@${game?.judgeId}>${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
         .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
