@@ -1,0 +1,255 @@
+// index.js (discord.js v14) — message-based CAH picker (submit ONE card at a time)
+// ✅ Ephemeral embed in-channel (not DMs)
+// ✅ User types picks like: 1   then later: 4
+// ✅ Crosses out selected cards in the ephemeral embed
+// ✅ Never re-numbers the hand (no splice/filter)
+// ✅ Stops when pickCount cards have been submitted
+//
+// Replit Secret: DISCORD_TOKEN
+// Discord Dev Portal: ENABLE "Message Content Intent" for the bot.
+
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Events,
+  EmbedBuilder,
+  PermissionFlagsBits,
+} = require("discord.js");
+
+const TOKEN = process.env.DISCORD_TOKEN;
+if (!TOKEN) throw new Error("Missing DISCORD_TOKEN in Replit Secrets");
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, // must be enabled in Dev Portal
+  ],
+  partials: [Partials.Channel],
+});
+
+// -------------------- State --------------------
+/**
+ * key: `${guildId}:${channelId}:${userId}`
+ * value: {
+ *   interaction, hand[], pickCount, selectedIdxs[], ended, collector
+ * }
+ */
+const pickUIs = new Map();
+
+function keyFor(interactionOrMsg) {
+  const userId = interactionOrMsg.user?.id ?? interactionOrMsg.author.id;
+  return `${interactionOrMsg.guildId}:${interactionOrMsg.channelId}:${userId}`;
+}
+
+// Keep markdown stable; underscores are OK inside code blocks,
+// but we also escape backticks to avoid breaking formatting.
+function sanitize(text) {
+  return String(text).replaceAll("`", "\\`");
+}
+
+function renderHandEmbed(hand, selectedIdxs, pickCount) {
+  const lines = hand.map((t, i) => {
+    const shown = selectedIdxs.includes(i) ? `~~${sanitize(t)}~~` : sanitize(t);
+    return `**${i + 1}.** ${shown}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle(`Pick ${pickCount} (one at a time)`)
+    .setDescription(lines.join("\n"))
+    .setFooter({
+      text: `Type ONE number per message (example: "1"). Selected: ${selectedIdxs.length}/${pickCount}. Type "reset" to start over.`,
+    });
+}
+
+function parseSinglePick(content, handSize) {
+  const c = content.trim().toLowerCase();
+  if (!c) return { kind: "ignore" };
+  if (c === "reset") return { kind: "reset" };
+  if (c === "cancel") return { kind: "cancel" };
+
+  // Extract first integer from the message (so "1", "pick 1", "1 please" all work)
+  const match = c.match(/\d+/);
+  if (!match) return { kind: "invalid" };
+
+  const n = Number(match[0]);
+  if (!Number.isInteger(n)) return { kind: "invalid" };
+
+  const idx = n - 1;
+  if (idx < 0 || idx >= handSize) return { kind: "out_of_range", n };
+
+  return { kind: "pick", idx, n };
+}
+
+async function startMessagePickerOneAtATime(interaction, hand, pickCount = 2, seconds = 60) {
+  const k = keyFor(interaction);
+
+  // Stop any existing picker for this same user in this same channel
+  const existing = pickUIs.get(k);
+  if (existing?.collector && !existing.collector.ended) existing.collector.stop("replaced");
+
+  const state = {
+    interaction,
+    hand: [...hand],          // ✅ stable order (do not mutate while picking)
+    pickCount,
+    selectedIdxs: [],
+    ended: false,
+    collector: null,
+  };
+
+  pickUIs.set(k, state);
+
+  // Ephemeral embed in the channel
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount)],
+  });
+
+  const channel = interaction.channel;
+
+  const collector = channel.createMessageCollector({
+    time: seconds * 1000,
+    filter: (m) => m.author.id === interaction.user.id && m.channelId === interaction.channelId,
+  });
+
+  state.collector = collector;
+
+  collector.on("collect", async (m) => {
+    if (state.ended) return;
+
+    const canDelete = m.guild?.members?.me?.permissionsIn(m.channel)?.has(PermissionFlagsBits.ManageMessages);
+
+    const parsed = parseSinglePick(m.content, state.hand.length);
+
+    // Optional: delete the user's pick message to keep the channel clean
+    if (canDelete) await m.delete().catch(() => {});
+
+    if (parsed.kind === "ignore") return;
+
+    if (parsed.kind === "reset") {
+      state.selectedIdxs = [];
+      await state.interaction.editReply({
+        embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount)],
+      });
+      return;
+    }
+
+    if (parsed.kind === "cancel") {
+      state.ended = true;
+      collector.stop("cancelled");
+      return;
+    }
+
+    if (parsed.kind === "invalid") {
+      await state.interaction.followUp({
+        ephemeral: true,
+        content: `Type **one number** (example: \`1\`). Or type \`reset\` / \`cancel\`.`,
+      }).catch(() => {});
+      return;
+    }
+
+    if (parsed.kind === "out_of_range") {
+      await state.interaction.followUp({
+        ephemeral: true,
+        content: `That number is out of range. Pick **1–${state.hand.length}**.`,
+      }).catch(() => {});
+      return;
+    }
+
+    // parsed.kind === "pick"
+    const { idx, n } = parsed;
+
+    if (state.selectedIdxs.includes(idx)) {
+      await state.interaction.followUp({
+        ephemeral: true,
+        content: `You already selected card **${n}**. Pick a different number.`,
+      }).catch(() => {});
+      return;
+    }
+
+    if (state.selectedIdxs.length >= state.pickCount) {
+      await state.interaction.followUp({
+        ephemeral: true,
+        content: `You already selected **${state.pickCount}** card(s). Type \`reset\` to change.`,
+      }).catch(() => {});
+      return;
+    }
+
+    // ✅ Submit ONE at a time: add this single pick, then update embed
+    state.selectedIdxs.push(idx);
+
+    await state.interaction.editReply({
+      embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount)],
+    });
+
+    // If they’ve now picked enough, stop and finalize
+    if (state.selectedIdxs.length === state.pickCount) {
+      state.ended = true;
+      collector.stop("complete");
+    }
+  });
+
+  collector.on("end", async (_collected, reason) => {
+    const current = pickUIs.get(k);
+    if (!current) return;
+
+    // Timed out or cancelled
+    if (reason !== "complete") {
+      await current.interaction.editReply({
+        embeds: [
+          renderHandEmbed(current.hand, current.selectedIdxs, current.pickCount).setFooter({
+            text: `Picker ended (${reason}). Run the command again to retry.`,
+          }),
+        ],
+      }).catch(() => {});
+      pickUIs.delete(k);
+      return;
+    }
+
+    // Completed picks — send chosen card texts back to your game logic
+    const chosenTexts = current.selectedIdxs.map((i) => current.hand[i]);
+
+    // ✅ Replace the block below with: submitPicksToGame(channelId, userId, chosenTexts)
+    await current.interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Submitted!")
+          .setDescription(chosenTexts.map((t, i) => `**${i + 1}.** ${sanitize(t)}`).join("\n"))
+          .setFooter({ text: "Your picks were submitted." }),
+      ],
+    }).catch(() => {});
+
+    pickUIs.delete(k);
+  });
+}
+
+// -------------------- Demo hook --------------------
+// Create a slash command /picktest (optional integer option "pickcount").
+// Or call startMessagePickerOneAtATime(...) from your existing CAH flow.
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== "picktest") return;
+
+  const demoHand = [
+    "A tiny horse.",
+    "Bees?",
+    "Tax season.",
+    "My last two brain cells fighting.",
+    "Microwaving fish at work.",
+    "A suspicious amount of glitter.",
+    "The WiFi going out during a boss fight.",
+    "An accidental group chat message.",
+    "A haunted AirTag.",
+    "Crying in the Target parking lot.",
+  ];
+
+  const pickCount = Number(interaction.options.getInteger("pickcount") ?? 2);
+  await startMessagePickerOneAtATime(interaction, demoHand, Math.max(1, Math.min(3, pickCount)), 60);
+});
+
+client.once(Events.ClientReady, () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.login(TOKEN);
