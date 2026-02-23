@@ -605,6 +605,11 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (endedGames.has(game.id)) {
+      await interaction.reply({ content: "That game is already ended.", ephemeral: true });
+      return;
+    }
+
     await endGame(interaction.channel, game.id, undefined, "The game has been ended.");
     await interaction.reply({ content: "Game ended!", ephemeral: true });
   }
@@ -833,47 +838,8 @@ client.on("messageCreate", async (message) => {
 
         if (index >= 0 && index < playerIds.length) {
           clearRoundTimer(game.id);
-
-          const winnerId = parseInt(playerIds[index]);
-          const winnerCard = playedCards.find(c => c.playerId === winnerId);
-
-          if (winnerCard) {
-            try {
-              const winner = await storage.incrementScore(winnerCard.playerId);
-              const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
-              const winnerGroup = playedCards.filter(c => c.playerId === winnerId).map(c => `"${c.text}"`).join(" / ");
-
-              const roundPlayers = await storage.getPlayers(game.id);
-              const roundScoreList = roundPlayers.sort((a, b) => b.score - a.score).map(p => `${p.username}: **${p.score}**`).join("\n");
-
-              await message.channel.send({
-                embeds: [
-                  new EmbedBuilder()
-                    .setTitle("Winner Selected!")
-                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${prettyBlanks(blackCard?.text || "")}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
-                    .setColor(0xFFD700)
-                ]
-              });
-
-              console.log("WIN CHECK (msg):", winnerCard.playerId, winner.score, "/ needed:", game.pointsToWin || 5, "ended?", endedGames.has(game.id));
-              if (winner.score >= (game.pointsToWin || 5)) {
-                await endGame(message.channel, game.id, winnerCard.playerId);
-                return;
-              }
-
-              const players = await storage.getPlayers(game.id);
-              const currentJudgeIndex = players.findIndex(p => p.userId === game.judgeId);
-              const nextJudge = players[(currentJudgeIndex + 1) % players.length];
-              await storage.setGameJudge(game.id, nextJudge.userId);
-              await storage.removePlayedCardsFromHands(game.id);
-              await storage.clearPlayedCards(game.id);
-              await delay(ROUND_BREAK);
-              await startRound(message.channel, game.id);
-              return;
-            } catch (e) {
-              console.error("Error in message-based judge flow:", e);
-            }
-          }
+          await handleJudgeSelection(message.channel, game, index);
+          return;
         }
       }
     }
