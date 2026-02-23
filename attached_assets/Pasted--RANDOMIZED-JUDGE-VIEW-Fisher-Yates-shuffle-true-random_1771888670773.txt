@@ -1,0 +1,88 @@
+// ================= RANDOMIZED JUDGE VIEW =================
+
+// Fisher–Yates shuffle (true random shuffle)
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Call this when ALL players have submitted their cards
+async function moveToJudgePhase(channel, channelId) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+
+  game.phase = "judgePicking";
+
+  // Convert submissions object → array
+  // game.submissions format assumed:
+  // {
+  //   playerId1: ["white card text", ...],
+  //   playerId2: ["white card text", ...]
+  // }
+
+  const submissionArray = Object.entries(game.submissions || {}).map(
+    ([playerId, cards]) => ({
+      playerId,
+      text: Array.isArray(cards) ? cards.join(" ") : cards
+    })
+  );
+
+  // Shuffle for judge
+  game.judgeView = shuffleArray([...submissionArray]);
+
+  // Display to judge
+  let displayText = game.judgeView
+    .map((sub, i) => `**${i + 1}.** ${sub.text}`)
+    .join("\n\n");
+
+  await channel.send(
+    `🧑‍⚖️ Judge <@${game.judgeId}>, pick the winning card by typing a number (1-${game.judgeView.length}).\n\n${displayText}`
+  );
+}
+
+// ================= JUDGE NUMBER HANDLER =================
+
+async function handleJudgePick(m, channelId) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+  if (game.phase !== "judgePicking") return;
+  if (m.author.id !== game.judgeId) return;
+
+  // Only accept EXACT 1-10 number message
+  const t = m.content.trim();
+  if (!/^(10|[1-9])$/.test(t)) return;
+
+  const n = Number(t);
+  const idx = n - 1;
+
+  if (idx < 0 || idx >= game.judgeView.length) return;
+
+  // DO NOT delete judge message
+
+  const winningSubmission = game.judgeView[idx];
+  const winnerId = winningSubmission.playerId;
+
+  // Award point
+  game.scores[winnerId] = (game.scores[winnerId] || 0) + 1;
+
+  await m.channel.send(
+    `🏆 <@${winnerId}> wins the round! (+1 point)`
+  );
+
+  // Check for game win condition
+  if (game.scores[winnerId] >= game.pointsToWin) {
+    await endGame(channelId, m.channel, "", winnerId);
+    return;
+  }
+
+  // Reset round data
+  game.submissions = {};
+  game.judgeView = null;
+  game.phase = "playersPicking";
+
+  // Start next round
+  startPickCollector(m.channel, channelId);
+}

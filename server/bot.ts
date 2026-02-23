@@ -71,6 +71,16 @@ function parseSinglePick(content: string, handSize: number): { kind: string; idx
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
 const endedGames = new Set<number>();
 const activeTransitions = new Set<number>();
+const judgeViewMap: Map<number, number[]> = new Map();
+
+function shuffleArray<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 function clearRoundTimer(gameId: number) {
   const existing = roundTimers.get(gameId);
@@ -123,6 +133,7 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
     });
   }
 
+  judgeViewMap.delete(gameId);
   await storage.deleteGame(gameId).catch(e => console.error("Failed to delete game from DB:", e));
 
   setTimeout(() => endedGames.delete(gameId), 30000);
@@ -752,12 +763,18 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
   try {
     const playedCards = await storage.getPlayedCards(game.id);
 
-    const grouped: { [playerId: number]: any[] } = {};
-    playedCards.forEach(pc => {
-      if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
-      grouped[pc.playerId].push(pc);
-    });
-    const playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
+    const shuffledOrder = judgeViewMap.get(game.id);
+    let playerIds: number[];
+    if (shuffledOrder) {
+      playerIds = shuffledOrder;
+    } else {
+      const grouped: { [playerId: number]: any[] } = {};
+      playedCards.forEach(pc => {
+        if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
+        grouped[pc.playerId].push(pc);
+      });
+      playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b)).map(Number);
+    }
 
     if (index < 0 || index >= playerIds.length) {
       if (source.reply) {
@@ -766,7 +783,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
       return;
     }
 
-    const winnerId = parseInt(playerIds[index]);
+    const winnerId = playerIds[index];
     const winnerCard = playedCards.find(c => c.playerId === winnerId);
 
     if (!winnerCard) {
@@ -809,6 +826,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
     await storage.setGameJudge(game.id, nextJudge.userId);
     await storage.removePlayedCardsFromHands(game.id);
     await storage.clearPlayedCards(game.id);
+    judgeViewMap.delete(game.id);
     await delay(ROUND_BREAK);
     await startRound(channel, game.id);
   } catch (e) {
@@ -826,16 +844,10 @@ client.on("messageCreate", async (message) => {
       const num = parseInt(message.content.trim());
       if (!isNaN(num)) {
         const index = num - 1;
-        const playedCards = await storage.getPlayedCards(game.id);
+        const shuffledOrder = judgeViewMap.get(game.id);
+        const maxOptions = shuffledOrder ? shuffledOrder.length : 0;
 
-        const grouped: { [playerId: number]: any[] } = {};
-        playedCards.forEach(pc => {
-          if (!grouped[pc.playerId]) grouped[pc.playerId] = [];
-          grouped[pc.playerId].push(pc);
-        });
-        const playerIds = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
-
-        if (index >= 0 && index < playerIds.length) {
+        if (maxOptions > 0 && index >= 0 && index < maxOptions) {
           clearRoundTimer(game.id);
           await handleJudgeSelection(message.channel, game, index);
           return;
@@ -927,12 +939,14 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
       playerNameMap[c.playerId] = c.username;
     });
 
-    const sortedPlayerIds = Object.keys(groupedPlayed).sort((a, b) => Number(a) - Number(b)).map(Number);
-    const optionsList = sortedPlayerIds.map((pid, i) => `**${i + 1}.** ${groupedPlayed[pid].join(" / ")}`).join("\n");
+    const rawPlayerIds = Object.keys(groupedPlayed).map(Number);
+    const shuffledPlayerIds = shuffleArray(rawPlayerIds);
+    judgeViewMap.set(gameId, shuffledPlayerIds);
+    const optionsList = shuffledPlayerIds.map((pid, i) => `**${i + 1}.** ${groupedPlayed[pid].join(" / ")}`).join("\n");
 
     const allPlayers = await storage.getPlayers(gameId);
-    const playedPlayerIds = new Set(sortedPlayerIds);
-    const submitted: string[] = sortedPlayerIds.map(pid => playerNameMap[pid]);
+    const playedPlayerIds = new Set(shuffledPlayerIds);
+    const submitted: string[] = shuffledPlayerIds.map(pid => playerNameMap[pid]);
     const missed: string[] = [];
     for (const p of allPlayers) {
       if (p.userId === game.judgeId) continue;
