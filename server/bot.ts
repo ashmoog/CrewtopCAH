@@ -381,9 +381,10 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle("Game Over!")
+          .setTitle("GAME OVER")
           .setDescription(`The game has been ended.\n\n**Final Scores:**\n${scores || "No scores."}`)
           .setColor(0xFF0000)
+          .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
       ]
     });
   }
@@ -551,12 +552,14 @@ async function handlePlayerRemoval(channel: any, game: any, wasJudge: boolean) {
     if (remainingPlayers.length < 2) {
       clearRoundTimer(game.id);
       await storage.updateGameStatus(game.id, "finished");
+      const scores = remainingPlayers.map((p: any) => `${p.username}: ${p.score}`).join("\n");
       await channel.send({
         embeds: [
           new EmbedBuilder()
-            .setTitle("Game Over")
-            .setDescription("Not enough players to continue. The game has ended.")
+            .setTitle("GAME OVER")
+            .setDescription(`Not enough players to continue.\n\n**Final Scores:**\n${scores || "No scores."}`)
             .setColor(0xFF0000)
+            .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
         ]
       });
       return;
@@ -661,9 +664,10 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
       await channel.send({
         embeds: [
           new EmbedBuilder()
-            .setTitle("Game Over!")
-            .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+            .setTitle("GAME OVER")
+            .setDescription(`**${winner.username}** wins the game with **${winner.score} points**!\n\n**Final Scores:**\n${scores}`)
             .setColor(0xFFD700)
+            .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
         ]
       });
       return;
@@ -789,9 +793,10 @@ client.on("messageCreate", async (message) => {
                 await message.channel.send({
                   embeds: [
                     new EmbedBuilder()
-                      .setTitle("Game Over!")
-                      .setDescription(`**${winner.username}** wins the game with ${winner.score} points!\n\n**Final Scores:**\n${scores}`)
+                      .setTitle("GAME OVER")
+                      .setDescription(`**${winner.username}** wins the game with **${winner.score} points**!\n\n**Final Scores:**\n${scores}`)
                       .setColor(0xFFD700)
+                      .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
                   ]
                 });
                 return;
@@ -943,7 +948,20 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
         });
 
         const players = await storage.getPlayers(gameId);
-        if (players.length < 2) return;
+        if (players.length < 2) {
+          await storage.updateGameStatus(gameId, "finished");
+          const scores = players.map((p: any) => `${p.username}: ${p.score}`).join("\n");
+          await channel.send({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("GAME OVER")
+                .setDescription(`Not enough players to continue.\n\n**Final Scores:**\n${scores || "No scores."}`)
+                .setColor(0xFF0000)
+                .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
+            ]
+          });
+          return;
+        }
         const currentJudgeIndex = players.findIndex((p: any) => p.userId === latestGame.judgeId);
         const nextJudge = players[(currentJudgeIndex + 1) % players.length];
         await storage.setGameJudge(gameId, nextJudge.userId);
@@ -1070,7 +1088,20 @@ async function startRound(channel: any, gameId: number) {
           ]
         });
         const allPlayers = await storage.getPlayers(gameId);
-        if (allPlayers.length < 2) return;
+        if (allPlayers.length < 2) {
+          await storage.updateGameStatus(gameId, "finished");
+          const scores = allPlayers.map((p: any) => `${p.username}: ${p.score}`).join("\n");
+          await channel.send({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle("GAME OVER")
+                .setDescription(`Not enough players to continue.\n\n**Final Scores:**\n${scores || "No scores."}`)
+                .setColor(0xFF0000)
+                .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
+            ]
+          });
+          return;
+        }
         const currentJudgeIndex = allPlayers.findIndex((p: any) => p.userId === currentGame.judgeId);
         const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
         await storage.setGameJudge(gameId, nextJudge.userId);
