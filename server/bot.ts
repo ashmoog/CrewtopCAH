@@ -669,6 +669,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
       await channel.send({ embeds: [embed] });
     }
 
+    console.log("WIN CHECK:", winnerCard.playerId, winner.score, "/ needed:", game.pointsToWin || 5, "ended?", endedGames.has(game.id));
     if (winner.score >= (game.pointsToWin || 5)) {
       await endGame(channel, game.id, winnerCard.playerId);
       return;
@@ -784,6 +785,7 @@ client.on("messageCreate", async (message) => {
                 ]
               });
 
+              console.log("WIN CHECK (msg):", winnerCard.playerId, winner.score, "/ needed:", game.pointsToWin || 5, "ended?", endedGames.has(game.id));
               if (winner.score >= (game.pointsToWin || 5)) {
                 await endGame(message.channel, game.id, winnerCard.playerId);
                 return;
@@ -921,6 +923,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     const timer = setTimeout(async () => {
       roundTimers.delete(gameId);
       try {
+        console.log("Judging timer fired. gameId:", gameId, "ended?", endedGames.has(gameId));
         const latestGame = await storage.getGame(channel.id);
         if (!latestGame || latestGame.id !== gameId || latestGame.status !== "judging") return;
 
@@ -956,6 +959,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
 }
 
 async function startRound(channel: any, gameId: number) {
+  console.log("Starting round. gameId:", gameId, "ended?", endedGames.has(gameId));
   if (endedGames.has(gameId)) return;
   clearRoundTimer(gameId);
 
@@ -1015,6 +1019,7 @@ async function startRound(channel: any, gameId: number) {
   const timer = setTimeout(async () => {
     roundTimers.delete(gameId);
     try {
+      console.log("Playing timer fired. gameId:", gameId, "ended?", endedGames.has(gameId));
       const currentGame = await storage.getGame(channel.id);
       if (!currentGame || currentGame.id !== gameId || currentGame.status !== "playing") return;
 
