@@ -97,10 +97,6 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
   });
   keysToDelete.forEach(k => pickUIs.delete(k));
 
-  await storage.updateGameStatus(gameId, "finished");
-  await storage.removePlayedCardsFromHands(gameId);
-  await storage.clearPlayedCards(gameId);
-
   const players = await storage.getPlayers(gameId);
   const scores = players.sort((a: any, b: any) => b.score - a.score).map((p: any) => `${p.username}: ${p.score}`).join("\n");
 
@@ -126,6 +122,8 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
       ]
     });
   }
+
+  await storage.deleteGame(gameId).catch(e => console.error("Failed to delete game from DB:", e));
 
   setTimeout(() => endedGames.delete(gameId), 30000);
 }
@@ -334,9 +332,10 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const canDelete = m.guild?.members?.me?.permissionsIn(m.channel)?.has(PermissionFlagsBits.ManageMessages);
         const parsed = parseSinglePick(m.content, state.hand.length);
 
+        const isPureNumber = /^(10|[1-9])$/.test(m.content.trim());
+        const canDelete = isPureNumber && m.guild?.members?.me?.permissionsIn(m.channel)?.has(PermissionFlagsBits.ManageMessages);
         if (canDelete) await m.delete().catch(() => {});
 
         if (parsed.kind === "ignore") return;

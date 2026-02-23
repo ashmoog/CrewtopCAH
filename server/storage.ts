@@ -29,6 +29,7 @@ export interface IStorage {
   setGameJudge(gameId: number, judgeId: string): Promise<Game>;
   setGameBlackCard(gameId: number, cardId: number): Promise<Game>;
   endGame(gameId: number): Promise<void>;
+  deleteGame(gameId: number): Promise<void>;
 
   // Players
   addPlayer(gameId: number, userId: string, username: string, isVip?: boolean): Promise<Player>;
@@ -132,6 +133,16 @@ export class DatabaseStorage implements IStorage {
 
   async endGame(gameId: number): Promise<void> {
     await db.update(games).set({ status: "finished" }).where(eq(games.id, gameId));
+  }
+
+  async deleteGame(gameId: number): Promise<void> {
+    await db.delete(playedCards).where(eq(playedCards.gameId, gameId));
+    const gamePlayers = await db.select().from(players).where(eq(players.gameId, gameId));
+    for (const p of gamePlayers) {
+      await db.delete(hands).where(eq(hands.playerId, p.id));
+    }
+    await db.delete(players).where(eq(players.gameId, gameId));
+    await db.delete(games).where(eq(games.id, gameId));
   }
 
   async addPlayer(gameId: number, userId: string, username: string, isVip = false): Promise<Player> {

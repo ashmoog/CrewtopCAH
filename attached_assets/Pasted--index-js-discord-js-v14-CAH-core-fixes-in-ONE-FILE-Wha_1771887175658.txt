@@ -1,0 +1,357 @@
+/**
+ * index.js (discord.js v14) — CAH core fixes in ONE FILE
+ *
+ * What this includes:
+ * ✅ Slash commands: /startgame and /endgame (handler only — you must register commands separately)
+ * ✅ Game ends when someone wins AND is DELETED from the database immediately
+ * ✅ /endgame NEVER creates a new game (prevents the "second GAME OVER with 0s")
+ * ✅ Message deletion rule: ONLY deletes messages that are EXACTLY one number 1–10 (trimmed)
+ * ✅ Judge number messages are NEVER deleted
+ * ✅ Safe guards so timers/collectors don't keep running after game ends
+ *
+ * Setup:
+ * - Replit Secret: DISCORD_TOKEN
+ * - Discord Dev Portal: Enable MESSAGE CONTENT INTENT
+ * - npm i discord.js @replit/database
+ *
+ * Notes:
+ * - This is a "core" framework you can plug into your existing CAH logic.
+ * - Where you see TODO, wire in your decks/submissions logic.
+ */
+
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Events,
+  PermissionFlagsBits,
+  EmbedBuilder,
+} = require("discord.js");
+
+// --- Optional DB (Replit DB) ---
+let db = null;
+try {
+  const Database = require("@replit/database");
+  db = new Database();
+} catch (e) {
+  console.warn("Replit DB not available. DB deletes will be skipped.");
+}
+
+const TOKEN = process.env.DISCORD_TOKEN;
+if (!TOKEN) throw new Error("Missing DISCORD_TOKEN in Replit Secrets");
+
+// ------------------- Discord client -------------------
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, // REQUIRED for reading "1".."10" messages
+  ],
+  partials: [Partials.Channel],
+});
+
+// ------------------- Active games (in memory) -------------------
+/**
+ * games key: channelId
+ * game: {
+ *   channelId,
+ *   ended,
+ *   pointsToWin,
+ *   scores: { [userId]: number },
+ *   players: Set<userId>,
+ *   judgeId,
+ *   phase: "playersPicking" | "judgePicking",
+ *   roundTimer,
+ *   pickCollector,
+ *   judgeCollector,
+ *   // submissions: array of { playerId, text[] } (your format)
+ * }
+ */
+const games = new Map();
+
+// ------------------- Helpers -------------------
+function isPurePickMessage(content) {
+  // ONLY deletes if the entire message is exactly "1".."9" or "10" (after trim)
+  const t = content.trim();
+  return /^(10|[1-9])$/.test(t);
+}
+
+function safeStopCollector(col) {
+  if (col && !col.ended) col.stop("stopped");
+}
+
+function safeClearTimer(game) {
+  if (game.roundTimer) {
+    clearTimeout(game.roundTimer);
+    game.roundTimer = null;
+  }
+}
+
+function formatScores(game) {
+  const entries = Object.entries(game.scores || {});
+  if (!entries.length) return "No scores recorded.";
+  return entries
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .map(([uid, pts]) => `<@${uid}>: ${pts ?? 0}`)
+    .join("\n");
+}
+
+async function deleteGameFromDB(channelId) {
+  if (!db) return;
+  // Adjust this key if your project uses a different key format
+  await db.delete(`cah_game:${channelId}`);
+}
+
+async function saveGameToDB(channelId, game) {
+  if (!db) return;
+  // Optional: if you already persist games, keep; otherwise you can remove this entirely.
+  await db.set(`cah_game:${channelId}`, game);
+}
+
+// ------------------- GAME END (the important part) -------------------
+async function endGame(channelId, channel, reasonText, winnerId = null) {
+  const game = games.get(channelId);
+  if (!game) return;
+
+  if (game.ended) {
+    // Already ended; ensure cleanup
+    games.delete(channelId);
+    return;
+  }
+
+  game.ended = true;
+
+  // Stop all timers/collectors first so nothing fires after ending
+  safeClearTimer(game);
+  safeStopCollector(game.pickCollector);
+  safeStopCollector(game.judgeCollector);
+  game.pickCollector = null;
+  game.judgeCollector = null;
+
+  // Announce final
+  const embed = new EmbedBuilder()
+    .setTitle("GAME OVER")
+    .setDescription(
+      winnerId
+        ? `<@${winnerId}> wins the game with **${game.scores?.[winnerId] ?? 0}** point(s)!\n\n${reasonText ?? ""}`.trim()
+        : `${reasonText ?? "The game has been ended."}`
+    )
+    .addFields({ name: "Final Scores:", value: formatScores(game) })
+    .setFooter({ text: "Thanks for playing! Use /startgame to play again." });
+
+  await channel.send({ embeds: [embed] }).catch(() => {});
+
+  // ✅ DELETE FROM DB ENTIRELY
+  await deleteGameFromDB(channelId).catch((e) => console.error("DB delete failed:", e));
+
+  // ✅ DELETE FROM MEMORY
+  games.delete(channelId);
+}
+
+// ------------------- Win check -------------------
+async function awardPointAndCheckWin(channel, channelId, playerId) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+
+  game.scores[playerId] = (game.scores[playerId] || 0) + 1;
+
+  // Optional persist
+  saveGameToDB(channelId, game).catch(() => {});
+
+  if (game.scores[playerId] >= game.pointsToWin) {
+    await endGame(channelId, channel, "", playerId);
+    return true;
+  }
+  return false;
+}
+
+// ------------------- Collectors -------------------
+// Deletes ONLY exact "1".."10" messages for NON-JUDGE.
+// Judge pick messages are never deleted.
+// Also: ONLY treats pure pick messages as picks; everything else is ignored.
+function startPickCollector(channel, channelId) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+
+  safeStopCollector(game.pickCollector);
+
+  const collector = channel.createMessageCollector({
+    time: 60_000,
+    filter: (m) => !m.author.bot,
+  });
+
+  game.pickCollector = collector;
+
+  collector.on("collect", async (m) => {
+    const current = games.get(channelId);
+    if (!current || current.ended) return;
+
+    // ---- Strict deletion rule ----
+    const botCanDelete = m.guild?.members?.me
+      ?.permissionsIn(m.channel)
+      ?.has(PermissionFlagsBits.ManageMessages);
+
+    const shouldDelete =
+      botCanDelete &&
+      isPurePickMessage(m.content) &&
+      m.author.id !== current.judgeId; // ✅ never delete judge message
+
+    if (shouldDelete) await m.delete().catch(() => {});
+
+    // Only treat pure pick messages as picks
+    if (!isPurePickMessage(m.content)) return;
+
+    // If you only want picks during playersPicking:
+    if (current.phase !== "playersPicking") return;
+
+    const pickNumber = Number(m.content.trim()); // 1..10 guaranteed
+    const idx = pickNumber - 1;
+
+    // TODO: Replace with your actual "submit one card at a time" logic.
+    // Example stub: record that this player submitted card idx (from their hand).
+    // Make sure you DO NOT remove cards from the hand array during selection.
+    // current.submissions = current.submissions || {};
+    // current.submissions[m.author.id] = current.submissions[m.author.id] || [];
+    // current.submissions[m.author.id].push(idx);
+
+    // For now, just acknowledge internally (no message spam):
+    console.log(`Player ${m.author.id} picked index ${idx} in channel ${channelId}`);
+
+    // TODO: when all players have submitted enough, switch to judgePicking
+    // current.phase = "judgePicking";
+    // startJudgeCollector(channel, channelId);
+
+    saveGameToDB(channelId, current).catch(() => {});
+  });
+
+  collector.on("end", (_c, reason) => {
+    const current = games.get(channelId);
+    if (!current || current.ended) return;
+    console.log("Pick collector ended:", reason);
+  });
+}
+
+function startJudgeCollector(channel, channelId) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+
+  safeStopCollector(game.judgeCollector);
+
+  const judgeId = game.judgeId;
+
+  const collector = channel.createMessageCollector({
+    time: 60_000,
+    filter: (m) => !m.author.bot && m.author.id === judgeId,
+  });
+
+  game.judgeCollector = collector;
+
+  collector.on("collect", async (m) => {
+    const current = games.get(channelId);
+    if (!current || current.ended) return;
+
+    // ✅ NEVER delete judge message — do nothing here.
+
+    if (!isPurePickMessage(m.content)) return; // judge must send exactly 1..10
+    if (current.phase !== "judgePicking") return;
+
+    const n = Number(m.content.trim());
+    const winningIdx = n - 1;
+
+    // TODO: Apply your actual winner selection:
+    // Example: let winningSubmission = current.submissionList[winningIdx]
+    // let winningPlayerId = winningSubmission.playerId
+
+    // Placeholder: choose a fake winner (replace this!)
+    const fakeWinnerId = Array.from(current.players)[0];
+    if (!fakeWinnerId) return;
+
+    // Award point & check win (ends + deletes DB if win)
+    const won = await awardPointAndCheckWin(channel, channelId, fakeWinnerId);
+    if (won) return;
+
+    // Otherwise start next round
+    // TODO: reset round state/submissions, rotate judge, etc.
+    current.phase = "playersPicking";
+    saveGameToDB(channelId, current).catch(() => {});
+    startPickCollector(channel, channelId);
+
+    collector.stop("picked");
+  });
+
+  collector.on("end", (_c, reason) => {
+    const current = games.get(channelId);
+    if (!current || current.ended) return;
+    console.log("Judge collector ended:", reason);
+  });
+}
+
+// ------------------- Slash commands -------------------
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+
+    const channelId = interaction.channelId;
+    const channel = interaction.channel;
+
+    // /startgame
+    if (interaction.commandName === "startgame") {
+      const existing = games.get(channelId);
+
+      if (existing && !existing.ended) {
+        return interaction.reply({ ephemeral: true, content: "A game is already running in this channel." });
+      }
+
+      // Create new game
+      const game = {
+        channelId,
+        ended: false,
+        pointsToWin: 5, // change if you want
+        scores: {},
+        players: new Set([interaction.user.id]), // TODO: add join system if needed
+        judgeId: interaction.user.id, // TODO: choose judge properly
+        phase: "playersPicking",
+        roundTimer: null,
+        pickCollector: null,
+        judgeCollector: null,
+      };
+
+      games.set(channelId, game);
+      await saveGameToDB(channelId, game).catch(() => {});
+
+      await interaction.reply({ content: "✅ Game started! Players: type a single number (1–10) to submit one card." });
+
+      // Start collector for typed picks
+      startPickCollector(channel, channelId);
+      return;
+    }
+
+    // /endgame
+    if (interaction.commandName === "endgame") {
+      // ✅ IMPORTANT: DO NOT CREATE A GAME HERE
+      const game = games.get(channelId);
+      if (!game || game.ended) {
+        return interaction.reply({ ephemeral: true, content: "No active game to end in this channel." });
+      }
+
+      await interaction.reply({ ephemeral: true, content: "Ending the game…" });
+      await endGame(channelId, channel, "The game has been ended.");
+      return;
+    }
+  } catch (err) {
+    console.error(err);
+    if (interaction.isRepliable()) {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ ephemeral: true, content: "Something went wrong." }).catch(() => {});
+      } else {
+        await interaction.reply({ ephemeral: true, content: "Something went wrong." }).catch(() => {});
+      }
+    }
+  }
+});
+
+client.once(Events.ClientReady, () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.login(TOKEN);
