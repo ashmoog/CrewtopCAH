@@ -16,6 +16,10 @@ const HAND_SIZE = 10;
 const ROUND_TIMEOUT = 60_000;
 const ROUND_BREAK = 5_000;
 
+function prettyBlanks(text: string): string {
+  return text.replace(/_+/g, "⬜⬜⬜⬜⬜");
+}
+
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
@@ -180,7 +184,7 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [
           new EmbedBuilder()
             .setTitle("Your Hand")
-            .setDescription(`## ${blackCard?.text || "None"}\n\n${description || "Empty hand."}\n\n${pickInfo}\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setDescription(`**${prettyBlanks(blackCard?.text || "None")}**\n\n${description || "Empty hand."}\n\n${pickInfo}\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
@@ -445,7 +449,7 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [
           new EmbedBuilder()
             .setTitle(`Played: ${selectedCard.text}`)
-            .setDescription(`Pick ${remainingToPick} more card(s).\n\n## ${blackCard.text}\n\n${handList}\n\nType the number (e.g. \`1\`) in the channel to play.`)
+            .setDescription(`Pick ${remainingToPick} more card(s).\n\n**${prettyBlanks(blackCard.text)}**\n\n${handList}\n\nType the number (e.g. \`1\`) in the channel to play.`)
             .setColor(0x2F3136)
         ],
         ephemeral: true
@@ -635,7 +639,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
 
     const embed = new EmbedBuilder()
       .setTitle("Winner Selected!")
-      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
+      .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${prettyBlanks(blackCard?.text || "")}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
       .setColor(0xFFD700);
 
     const channel = source.channel || source;
@@ -770,7 +774,7 @@ client.on("messageCreate", async (message) => {
                 embeds: [
                   new EmbedBuilder()
                     .setTitle("Winner Selected!")
-                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${blackCard?.text || ""}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
+                    .setDescription(`**${winner.username}** wins the round!\n\n**Black Card:** ${prettyBlanks(blackCard?.text || "")}\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${roundScoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
                     .setColor(0xFFD700)
                 ]
               });
@@ -817,10 +821,10 @@ client.on("messageCreate", async (message) => {
 });
 
 async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
-  const players = await storage.getPlayers(gameId);
   const game = await storage.getGame(channel.id);
-  if (!game) return;
+  if (!game || game.status !== "playing") return;
 
+  const players = await storage.getPlayers(gameId);
   const currentlyPlayed = await storage.getPlayedCards(gameId);
 
   const eligiblePlayers = [];
@@ -837,110 +841,124 @@ async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
 
   const allDone = eligiblePlayers.every(e => e.playedCount >= (blackCard.pick || 1));
   if (allDone) {
+    const freshGame = await storage.getGame(channel.id);
+    if (!freshGame || freshGame.status !== "playing") return;
     clearRoundTimer(gameId);
-    await transitionToJudging(channel, gameId, blackCard, game);
+    await transitionToJudging(channel, gameId, blackCard, freshGame);
   }
 }
 
+const activeTransitions = new Set<number>();
+
 async function transitionToJudging(channel: any, gameId: number, blackCard: any, game: any) {
-  await storage.updateGameStatus(gameId, "judging");
+  if (activeTransitions.has(gameId)) return;
+  activeTransitions.add(gameId);
 
-  const requiredPicks = blackCard?.pick || 1;
-  const currentlyPlayed = await storage.getPlayedCards(gameId);
+  try {
+    const currentGame = await storage.getGame(channel.id);
+    if (!currentGame || currentGame.status === "finished") return;
 
-  const playerPlayedCount: { [playerId: number]: number } = {};
-  currentlyPlayed.forEach(c => {
-    playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
-  });
+    await storage.updateGameStatus(gameId, "judging");
 
-  const incompletePlayerIds = Object.keys(playerPlayedCount)
-    .filter(pid => playerPlayedCount[Number(pid)] < requiredPicks)
-    .map(Number);
-  for (const pid of incompletePlayerIds) {
-    await db.delete(playedCardsTable).where(
-      and(eq(playedCardsTable.gameId, gameId), eq(playedCardsTable.playerId, pid))
-    );
-  }
+    const requiredPicks = blackCard?.pick || 1;
+    const currentlyPlayed = await storage.getPlayedCards(gameId);
 
-  const validPlayed = await storage.getPlayedCards(gameId);
+    const playerPlayedCount: { [playerId: number]: number } = {};
+    currentlyPlayed.forEach(c => {
+      playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
+    });
 
-  if (validPlayed.length === 0) {
-    await channel.send("No one played enough cards this round. Skipping to next round...");
-    const players = await storage.getPlayers(gameId);
-    const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
-    const nextJudge = players[(currentJudgeIndex + 1) % players.length];
-    await storage.setGameJudge(gameId, nextJudge.userId);
-    await storage.removePlayedCardsFromHands(gameId);
-    await storage.clearPlayedCards(gameId);
-    await startRound(channel, gameId);
-    return;
-  }
-
-  const groupedPlayed: { [playerId: number]: string[] } = {};
-  const playerNameMap: { [playerId: number]: string } = {};
-  validPlayed.forEach(c => {
-    if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
-    groupedPlayed[c.playerId].push(c.text);
-    playerNameMap[c.playerId] = c.username;
-  });
-
-  const sortedPlayerIds = Object.keys(groupedPlayed).sort((a, b) => Number(a) - Number(b)).map(Number);
-  const optionsList = sortedPlayerIds.map((pid, i) => `**${i + 1}.** ${groupedPlayed[pid].join(" / ")}`).join("\n");
-
-  const allPlayers = await storage.getPlayers(gameId);
-  const playedPlayerIds = new Set(sortedPlayerIds);
-  const submitted: string[] = sortedPlayerIds.map(pid => playerNameMap[pid]);
-  const missed: string[] = [];
-  for (const p of allPlayers) {
-    if (p.userId === game.judgeId) continue;
-    if (playedPlayerIds.has(p.id)) continue;
-    const hand = await storage.getHand(p.id);
-    if (hand.length > 0) {
-      missed.push(p.username);
+    const incompletePlayerIds = Object.keys(playerPlayedCount)
+      .filter(pid => playerPlayedCount[Number(pid)] < requiredPicks)
+      .map(Number);
+    for (const pid of incompletePlayerIds) {
+      await db.delete(playedCardsTable).where(
+        and(eq(playedCardsTable.gameId, gameId), eq(playedCardsTable.playerId, pid))
+      );
     }
-  }
 
-  const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
-  const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
+    const validPlayed = await storage.getPlayedCards(gameId);
 
-  await channel.send({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("All cards are in!")
-        .setDescription(`**Judge:** <@${game.judgeId}>\n\n## ${blackCard?.text}\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
-        .setColor(0x00FF00)
-    ]
-  });
-
-  const timer = setTimeout(async () => {
-    roundTimers.delete(gameId);
-    try {
-      const currentGame = await storage.getGame(channel.id);
-      if (!currentGame || currentGame.id !== gameId || currentGame.status !== "judging") return;
-
-      await channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("Time's Up!")
-            .setDescription("The judge didn't pick in time. No winner this round. Moving on...")
-            .setColor(0xFF6600)
-        ]
-      });
-
+    if (validPlayed.length === 0) {
+      await channel.send("No one played enough cards this round. Skipping to next round...");
       const players = await storage.getPlayers(gameId);
-      if (players.length < 2) return;
-      const currentJudgeIndex = players.findIndex((p: any) => p.userId === currentGame.judgeId);
+      const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
       const nextJudge = players[(currentJudgeIndex + 1) % players.length];
       await storage.setGameJudge(gameId, nextJudge.userId);
       await storage.removePlayedCardsFromHands(gameId);
       await storage.clearPlayedCards(gameId);
       await startRound(channel, gameId);
-    } catch (e) {
-      console.error("Error in judging timer:", e);
+      return;
     }
-  }, ROUND_TIMEOUT);
 
-  roundTimers.set(gameId, timer);
+    const groupedPlayed: { [playerId: number]: string[] } = {};
+    const playerNameMap: { [playerId: number]: string } = {};
+    validPlayed.forEach(c => {
+      if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
+      groupedPlayed[c.playerId].push(c.text);
+      playerNameMap[c.playerId] = c.username;
+    });
+
+    const sortedPlayerIds = Object.keys(groupedPlayed).sort((a, b) => Number(a) - Number(b)).map(Number);
+    const optionsList = sortedPlayerIds.map((pid, i) => `**${i + 1}.** ${groupedPlayed[pid].join(" / ")}`).join("\n");
+
+    const allPlayers = await storage.getPlayers(gameId);
+    const playedPlayerIds = new Set(sortedPlayerIds);
+    const submitted: string[] = sortedPlayerIds.map(pid => playerNameMap[pid]);
+    const missed: string[] = [];
+    for (const p of allPlayers) {
+      if (p.userId === game.judgeId) continue;
+      if (playedPlayerIds.has(p.id)) continue;
+      const hand = await storage.getHand(p.id);
+      if (hand.length > 0) {
+        missed.push(p.username);
+      }
+    }
+
+    const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
+    const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
+
+    await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("All cards are in!")
+          .setDescription(`**Judge:** <@${game.judgeId}>\n\n**${prettyBlanks(blackCard?.text || "")}**\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+          .setColor(0x00FF00)
+      ]
+    });
+
+    const timer = setTimeout(async () => {
+      roundTimers.delete(gameId);
+      try {
+        const latestGame = await storage.getGame(channel.id);
+        if (!latestGame || latestGame.id !== gameId || latestGame.status !== "judging") return;
+
+        await channel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("Time's Up!")
+              .setDescription("The judge didn't pick in time. No winner this round. Moving on...")
+              .setColor(0xFF6600)
+          ]
+        });
+
+        const players = await storage.getPlayers(gameId);
+        if (players.length < 2) return;
+        const currentJudgeIndex = players.findIndex((p: any) => p.userId === latestGame.judgeId);
+        const nextJudge = players[(currentJudgeIndex + 1) % players.length];
+        await storage.setGameJudge(gameId, nextJudge.userId);
+        await storage.removePlayedCardsFromHands(gameId);
+        await storage.clearPlayedCards(gameId);
+        await startRound(channel, gameId);
+      } catch (e) {
+        console.error("Error in judging timer:", e);
+      }
+    }, ROUND_TIMEOUT);
+
+    roundTimers.set(gameId, timer);
+  } finally {
+    activeTransitions.delete(gameId);
+  }
 }
 
 async function startRound(channel: any, gameId: number) {
@@ -988,7 +1006,7 @@ async function startRound(channel: any, gameId: number) {
     embeds: [
       new EmbedBuilder()
         .setTitle("New Round!")
-        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n## ${blackCard.text}${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
+        .setDescription(`**Judge:** <@${game?.judgeId}>\n\n**${prettyBlanks(blackCard.text)}**${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
         .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
         .setColor(0x000000)
     ],
