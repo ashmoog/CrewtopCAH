@@ -22,6 +22,69 @@ function prettyBlanks(text: string): string {
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+interface PickUIState {
+  gameId: number;
+  playerId: number;
+  hand: { id: number; text: string; handId: number }[];
+  pickCount: number;
+  selectedIdxs: number[];
+  ended: boolean;
+}
+const pickUIs = new Map<string, PickUIState>();
+
+function pickUIKey(guildId: string, channelId: string, userId: string): string {
+  return `${guildId}:${channelId}:${userId}`;
+}
+
+function renderHandEmbed(hand: { text: string }[], selectedIdxs: number[], pickCount: number, blackCardText: string) {
+  const lines = hand.map((c, i) => {
+    const shown = selectedIdxs.includes(i) ? `~~${c.text}~~` : c.text;
+    return `**${i + 1}.** ${shown}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle("Your Hand")
+    .setDescription(`**${prettyBlanks(blackCardText)}**\n\n${lines.join("\n")}`)
+    .setFooter({ text: `Selected: ${selectedIdxs.length}/${pickCount}` })
+    .setColor(0x2F3136);
+}
+
+function buildHandButtons(handLength: number, selectedIdxs: number[]) {
+  const max = Math.min(handLength, 25);
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+
+  for (let i = 0; i < max; i += 5) {
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (let j = i; j < Math.min(i + 5, max); j++) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`pick_idx_${j}`)
+          .setLabel(String(j + 1))
+          .setStyle(selectedIdxs.includes(j) ? ButtonStyle.Secondary : ButtonStyle.Primary)
+          .setDisabled(selectedIdxs.includes(j))
+      );
+    }
+    rows.push(row);
+  }
+
+  rows.push(
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId("pick_submit")
+        .setLabel("Submit")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(selectedIdxs.length === 0),
+      new ButtonBuilder()
+        .setCustomId("pick_reset")
+        .setLabel("Reset")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(selectedIdxs.length === 0)
+    )
+  );
+
+  return rows;
+}
+
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
 const endedGames = new Set<number>();
 const activeTransitions = new Set<number>();
@@ -213,23 +276,47 @@ client.on("interactionCreate", async (interaction) => {
       const hand = await storage.getHand(player.id);
       const played = await storage.getPlayedCards(game.id);
       const playerPlayed = played.filter(p => p.playerId === player.id);
-      const playedCardIds = new Set(playerPlayed.map(p => p.id));
-      const description = hand.map((c, i) => {
-        if (playedCardIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
-        return `**${i + 1}.** ${c.text}`;
-      }).join("\n");
-
       const pickNeeded = (blackCard?.pick || 1) - playerPlayed.length;
-      const pickInfo = pickNeeded > 0 ? `Pick ${pickNeeded} card(s).` : "You've already played your cards this round.";
+
+      if (pickNeeded <= 0) {
+        return interaction.reply({ content: "You've already played your cards this round.", ephemeral: true });
+      }
+
+      if (game.status !== "playing") {
+        const playedCardIds = new Set(playerPlayed.map(p => p.id));
+        const description = hand.map((c, i) => {
+          if (playedCardIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
+          return `**${i + 1}.** ${c.text}`;
+        }).join("\n");
+        return interaction.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("Your Hand")
+              .setDescription(description || "Empty hand.")
+              .setColor(0x2F3136)
+          ],
+          ephemeral: true
+        });
+      }
+
+      const playedCardIds = new Set(playerPlayed.map(p => p.id));
+      const availableHand = hand.filter(c => !playedCardIds.has(c.id));
+
+      const key = pickUIKey(guildId!, channelId!, user.id);
+      const state: PickUIState = {
+        gameId: game.id,
+        playerId: player.id,
+        hand: availableHand,
+        pickCount: pickNeeded,
+        selectedIdxs: [],
+        ended: false,
+      };
+      pickUIs.set(key, state);
 
       await interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("Your Hand")
-            .setDescription(`**${prettyBlanks(blackCard?.text || "None")}**\n\n${description || "Empty hand."}\n\n${pickInfo}\nType the number (e.g. \`1\`) in the channel to play.`)
-            .setColor(0x2F3136)
-        ],
-        ephemeral: true
+        embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount, blackCard?.text || "None")],
+        components: buildHandButtons(state.hand.length, state.selectedIdxs),
+        ephemeral: true,
       });
     }
 
@@ -301,6 +388,98 @@ client.on("interactionCreate", async (interaction) => {
 
       await startRound(interaction.channel, game.id);
     }
+
+    if (customId === "pick_reset") {
+      const key = pickUIKey(guildId!, channelId!, user.id);
+      const state = pickUIs.get(key);
+      if (!state || state.ended) {
+        return interaction.reply({ content: "That selection has expired. Click View Cards again.", ephemeral: true });
+      }
+      state.selectedIdxs = [];
+      const game = await storage.getGame(channelId!);
+      const blackCard = game?.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+      return interaction.update({
+        embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount, blackCard?.text || "None")],
+        components: buildHandButtons(state.hand.length, state.selectedIdxs),
+      });
+    }
+
+    if (customId === "pick_submit") {
+      const key = pickUIKey(guildId!, channelId!, user.id);
+      const state = pickUIs.get(key);
+      if (!state || state.ended) {
+        return interaction.reply({ content: "That selection has expired. Click View Cards again.", ephemeral: true });
+      }
+
+      if (state.selectedIdxs.length !== state.pickCount) {
+        return interaction.reply({ content: `Pick exactly **${state.pickCount}** card(s) before submitting.`, ephemeral: true });
+      }
+
+      state.ended = true;
+
+      const game = await storage.getGame(channelId!);
+      if (!game || game.status !== "playing") {
+        pickUIs.delete(key);
+        return interaction.update({ content: "The round has ended.", embeds: [], components: [] });
+      }
+
+      const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+      const pickedCards = state.selectedIdxs.map(i => state.hand[i]);
+
+      for (const card of pickedCards) {
+        await storage.playCard(state.gameId, state.playerId, card.id);
+      }
+
+      const pickedText = pickedCards.map((c, i) => `**${i + 1}.** ${c.text}`).join("\n");
+      await interaction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Submitted!")
+            .setDescription(pickedText)
+            .setColor(0x00FF00)
+        ],
+        components: [],
+      });
+
+      await (interaction.channel as any)?.send(`${user.username} has finished playing their cards!`);
+
+      pickUIs.delete(key);
+
+      if (blackCard) {
+        await checkAllPlayed(interaction.channel, state.gameId, blackCard);
+      }
+    }
+
+    if (customId.startsWith("pick_idx_")) {
+      const key = pickUIKey(guildId!, channelId!, user.id);
+      const state = pickUIs.get(key);
+      if (!state || state.ended) {
+        return interaction.reply({ content: "That selection has expired. Click View Cards again.", ephemeral: true });
+      }
+
+      const idx = parseInt(customId.split("pick_idx_")[1]);
+      if (isNaN(idx) || idx < 0 || idx >= state.hand.length) {
+        return interaction.reply({ content: "Invalid card selection.", ephemeral: true });
+      }
+
+      if (state.selectedIdxs.includes(idx)) {
+        return interaction.reply({ content: "You already selected that card.", ephemeral: true });
+      }
+
+      if (state.selectedIdxs.length >= state.pickCount) {
+        return interaction.reply({ content: `You already selected **${state.pickCount}** card(s). Submit or reset.`, ephemeral: true });
+      }
+
+      state.selectedIdxs.push(idx);
+
+      const game = await storage.getGame(channelId!);
+      const blackCard = game?.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+      return interaction.update({
+        embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount, blackCard?.text || "None")],
+        components: buildHandButtons(state.hand.length, state.selectedIdxs),
+      });
+    }
+
     return;
   }
 
@@ -320,7 +499,7 @@ client.on("interactionCreate", async (interaction) => {
             { name: "/add @player", value: "Add a player to the game (leader only)" },
             { name: "/boot @player", value: "Boot a player from the game (leader only)" },
             { name: "/endgame", value: "End the current game" },
-            { name: "Type a number (1-10)", value: "Play a card from your hand during a round" },
+            { name: "View Cards button", value: "Click to see your hand and select cards to play via buttons" },
             { name: "/score", value: "Show current scores" },
             { name: "/leave", value: "Leave the game" }
           )
@@ -416,77 +595,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (commandName === "pick") {
-    const game = await storage.getGame(channelId!);
-    if (!game || game.status !== "playing") {
-      await interaction.reply({ content: "No active round to pick cards for.", ephemeral: true });
-      return;
-    }
-
-    if (game.judgeId === user.id) {
-      await interaction.reply({ content: "You are the judge this round! You don't pick a card.", ephemeral: true });
-      return;
-    }
-
-    const player = await storage.getPlayer(game.id, user.id);
-    if (!player) {
-      await interaction.reply({ content: "You are not in this game!", ephemeral: true });
-      return;
-    }
-
-    const blackCard = await storage.getCard(game.currentBlackCardId!);
-    if (!blackCard) {
-      await interaction.reply({ content: "Error: Black card not found.", ephemeral: true });
-      return;
-    }
-
-    const played = await storage.getPlayedCards(game.id);
-    const playerPlayed = played.filter(p => p.playerId === player.id);
-
-    if (playerPlayed.length >= (blackCard.pick || 1)) {
-      await interaction.reply({ content: `You have already played the required ${(blackCard.pick || 1)} cards this round.`, ephemeral: true });
-      return;
-    }
-
-    const index = options.getInteger('number')! - 1;
-    const hand = await storage.getHand(player.id);
-    const playedCardIds = new Set(playerPlayed.map(p => p.id));
-
-    if (isNaN(index) || index < 0 || index >= hand.length) {
-      await interaction.reply({ content: "Invalid card number. Click View Cards to check your hand.", ephemeral: true });
-      return;
-    }
-
-    const selectedCard = hand[index];
-    if (playedCardIds.has(selectedCard.id)) {
-      await interaction.reply({ content: "You already played that card. Pick a different one.", ephemeral: true });
-      return;
-    }
-
-    await storage.playCard(game.id, player.id, selectedCard.id);
-
-    const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
-
-    if (remainingToPick > 0) {
-      const newPlayedIds = new Set(Array.from(playedCardIds).concat([selectedCard.id]));
-      const handList = hand.map((c, i) => {
-        if (newPlayedIds.has(c.id)) return `**${i + 1}.** ~~${c.text}~~`;
-        return `**${i + 1}.** ${c.text}`;
-      }).join("\n");
-      await interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle(`Played: ${selectedCard.text}`)
-            .setDescription(`Pick ${remainingToPick} more card(s).\n\n**${prettyBlanks(blackCard.text)}**\n\n${handList}\n\nType the number (e.g. \`1\`) in the channel to play.`)
-            .setColor(0x2F3136)
-        ],
-        ephemeral: true
-      });
-    } else {
-      await interaction.reply({ content: `You played your final card: ${selectedCard.text}`, ephemeral: true });
-      await (interaction.channel as any)?.send(`${user.username} has finished playing their cards!`);
-    }
-
-    await checkAllPlayed(interaction.channel, game.id, blackCard);
+    await interaction.reply({ content: "The /pick command has been replaced! Click the **View Cards** button to select and play cards.", ephemeral: true });
   }
 
   if (commandName === "judge") {
@@ -693,52 +802,6 @@ client.on("messageCreate", async (message) => {
 
   if (message.guildId) {
     const game = await storage.getGame(message.channelId);
-
-    if (game && game.status === "playing") {
-      const player = await storage.getPlayer(game.id, message.author.id);
-      if (player && game.judgeId !== message.author.id) {
-        const num = parseInt(message.content.trim());
-        if (!isNaN(num)) {
-          const blackCard = await storage.getCard(game.currentBlackCardId!);
-          const played = await storage.getPlayedCards(game.id);
-          const playerPlayed = played.filter(p => p.playerId === player.id);
-
-          if (blackCard && playerPlayed.length < (blackCard.pick || 1)) {
-            const hand = await storage.getHand(player.id);
-            const playedCardIds = new Set(playerPlayed.map(p => p.id));
-            const index = num - 1;
-
-            if (index >= 0 && index < hand.length) {
-              const selectedCard = hand[index];
-              if (playedCardIds.has(selectedCard.id)) {
-                try { if (message.deletable) await message.delete(); } catch (e) {}
-                return;
-              }
-              await storage.playCard(game.id, player.id, selectedCard.id);
-
-              const remainingToPick = (blackCard.pick || 1) - (playerPlayed.length + 1);
-
-              try {
-                if (message.deletable) {
-                  await message.delete();
-                }
-              } catch (e) {
-                console.error("Failed to delete message:", e);
-              }
-
-              if (remainingToPick > 0) {
-                await message.channel.send({ content: `${message.author.username} played a card. ${remainingToPick} more to pick.` });
-              } else {
-                await message.channel.send(`${message.author.username} has finished playing their cards!`);
-              }
-
-              await checkAllPlayed(message.channel, game.id, blackCard);
-              return;
-            }
-          }
-        }
-      }
-    }
 
     if (game && game.status === "judging" && game.judgeId === message.author.id) {
       const num = parseInt(message.content.trim());
@@ -1010,7 +1073,7 @@ async function startRound(channel: any, gameId: number) {
       new EmbedBuilder()
         .setTitle("New Round!")
         .setDescription(`**Judge:** <@${game?.judgeId}>\n\n**${prettyBlanks(blackCard.text)}**${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
-        .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
+        .setFooter({ text: "Click 'View Cards' to see your hand and pick cards with buttons! You have 60 seconds!" })
         .setColor(0x000000)
     ],
     components: [row]

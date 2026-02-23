@@ -1,0 +1,244 @@
+// index.js  (discord.js v14)
+// ✅ Stable hand numbering (card #3 never becomes #2)
+// ✅ Ephemeral embed updates + strikethrough selected cards
+// ✅ Supports "pick 2 / pick 3" via pickCount
+// ✅ Disables picked cards so user can't pick same card twice
+//
+// Replit: set a Secret named DISCORD_TOKEN with your bot token.
+
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  Events,
+} = require("discord.js");
+
+const TOKEN = process.env.DISCORD_TOKEN;
+if (!TOKEN) throw new Error("Missing DISCORD_TOKEN in Replit Secrets");
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+  partials: [Partials.Channel],
+});
+
+// ---- In-memory state: per-user selection UI (ephemeral) ----
+/**
+ * pickUIs key: `${guildId}:${channelId}:${userId}`
+ * value: {
+ *   hand: string[],
+ *   pickCount: number,
+ *   selectedIdxs: number[],
+ *   ended: boolean
+ * }
+ */
+const pickUIs = new Map();
+
+// ---- Helpers ----
+function keyFor(interaction) {
+  return `${interaction.guildId}:${interaction.channelId}:${interaction.user.id}`;
+}
+
+function escapeDiscord(text) {
+  // prevents underscores/markdown weirdness outside code blocks
+  return text
+    .replaceAll("\\", "\\\\")
+    .replaceAll("_", "\\_")
+    .replaceAll("*", "\\*")
+    .replaceAll("`", "\\`")
+    .replaceAll("~", "\\~");
+}
+
+function renderHandEmbed(hand, selectedIdxs, pickCount) {
+  const lines = hand.map((t, i) => {
+    const safe = escapeDiscord(t);
+    const shown = selectedIdxs.includes(i) ? `~~${safe}~~` : safe;
+    return `**${i + 1}.** ${shown}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle(`Pick ${pickCount}`)
+    .setDescription(lines.join("\n"))
+    .setFooter({ text: `Selected: ${selectedIdxs.length}/${pickCount}` });
+}
+
+function buildHandButtons(hand, selectedIdxs) {
+  // Max 25 buttons (5 rows x 5). Adjust if your hand is bigger.
+  const max = Math.min(hand.length, 25);
+  const rows = [];
+
+  for (let i = 0; i < max; i += 5) {
+    const row = new ActionRowBuilder();
+    for (let j = i; j < Math.min(i + 5, max); j++) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`pick_idx_${j}`) // ✅ stable index
+          .setLabel(String(j + 1))      // shows 1..N
+          .setStyle(selectedIdxs.includes(j) ? ButtonStyle.Secondary : ButtonStyle.Primary)
+          .setDisabled(selectedIdxs.includes(j)) // ✅ prevents re-pick
+      );
+    }
+    rows.push(row);
+  }
+
+  // Submit + Reset row
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("pick_submit")
+        .setLabel("Submit")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(selectedIdxs.length === 0),
+      new ButtonBuilder()
+        .setCustomId("pick_reset")
+        .setLabel("Reset")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(selectedIdxs.length === 0)
+    )
+  );
+
+  return rows;
+}
+
+async function startPickUI(interaction, hand, pickCount = 2) {
+  const state = {
+    hand: [...hand],           // ✅ do not mutate during selection
+    pickCount,
+    selectedIdxs: [],
+    ended: false,
+  };
+
+  pickUIs.set(keyFor(interaction), state);
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount)],
+    components: buildHandButtons(state.hand, state.selectedIdxs),
+  });
+}
+
+// ---- Example command trigger (for quick testing) ----
+// This listens for a slash command named /picktest (you must create it in your server)
+// If you already have your own command flow, just call startPickUI(...) where needed.
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    // ---- Slash command (optional demo) ----
+    if (interaction.isChatInputCommand() && interaction.commandName === "picktest") {
+      // Example hand + pickCount. Replace with your real JSON-driven hand.
+      const demoHand = [
+        "A tiny horse.",
+        "My last two brain cells fighting.",
+        "Bees?",
+        "Tax season.",
+        "A suspicious amount of glitter.",
+        "Microwaving fish at work.",
+        "The WiFi going out during a boss fight.",
+        "An accidental group chat message.",
+        "A haunted AirTag.",
+        "Crying in the Target parking lot.",
+      ];
+
+      // Example: make it Pick 2 or Pick 3 from your black card logic
+      const pickCount = Number(interaction.options.getInteger("pickcount") ?? 2);
+
+      return startPickUI(interaction, demoHand, Math.max(1, Math.min(3, pickCount)));
+    }
+
+    // ---- Button clicks for ephemeral picker ----
+    if (!interaction.isButton()) return;
+
+    const k = keyFor(interaction);
+    const state = pickUIs.get(k);
+    if (!state || state.ended) {
+      // If state is missing (bot restarted) or ended, avoid errors
+      return interaction.reply({ content: "That selection has expired. Please start again.", ephemeral: true });
+    }
+
+    // Ensure only the original user can interact (extra safety)
+    if (interaction.user.id !== interaction.user.id) return;
+
+    // Handle Reset
+    if (interaction.customId === "pick_reset") {
+      state.selectedIdxs = [];
+      return interaction.update({
+        embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount)],
+        components: buildHandButtons(state.hand, state.selectedIdxs),
+      });
+    }
+
+    // Handle Submit
+    if (interaction.customId === "pick_submit") {
+      // Require exactly pickCount selections
+      if (state.selectedIdxs.length !== state.pickCount) {
+        return interaction.reply({
+          content: `Pick exactly **${state.pickCount}** card(s) before submitting.`,
+          ephemeral: true,
+        });
+      }
+
+      state.ended = true;
+
+      const pickedTexts = state.selectedIdxs.map((i) => state.hand[i]);
+      // ✅ Here is where you pass selections into your CAH round logic
+      // For demo: just show what they picked
+      await interaction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Submitted!")
+            .setDescription(pickedTexts.map((t, i) => `**${i + 1}.** ${escapeDiscord(t)}`).join("\n")),
+        ],
+        components: [],
+      });
+
+      // Cleanup (optional)
+      pickUIs.delete(k);
+      return;
+    }
+
+    // Handle picking a specific card index
+    if (interaction.customId.startsWith("pick_idx_")) {
+      const idx = Number(interaction.customId.split("pick_idx_")[1]);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= state.hand.length) {
+        return interaction.reply({ content: "Invalid card selection.", ephemeral: true });
+      }
+
+      // ✅ Do NOT remove cards from the hand. Do NOT splice/filter.
+      if (state.selectedIdxs.includes(idx)) {
+        return interaction.reply({ content: "You already selected that card.", ephemeral: true });
+      }
+
+      if (state.selectedIdxs.length >= state.pickCount) {
+        return interaction.reply({
+          content: `You already selected **${state.pickCount}** card(s). Submit or reset.`,
+          ephemeral: true,
+        });
+      }
+
+      state.selectedIdxs.push(idx);
+
+      return interaction.update({
+        embeds: [renderHandEmbed(state.hand, state.selectedIdxs, state.pickCount)],
+        components: buildHandButtons(state.hand, state.selectedIdxs),
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    // Avoid double-reply errors
+    if (interaction.isRepliable()) {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: "Something went wrong.", ephemeral: true }).catch(() => {});
+      } else {
+        await interaction.reply({ content: "Something went wrong.", ephemeral: true }).catch(() => {});
+      }
+    }
+  }
+});
+
+client.once(Events.ClientReady, () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.login(TOKEN);
