@@ -802,7 +802,7 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
 
     const embed = new EmbedBuilder()
       .setTitle("Winner Selected!")
-      .setDescription(`${prettyBlanks(blackCard?.text || "")}\n\n**${winner.username}** wins the round!\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
+      .setDescription(`**Black Card:** ${prettyBlanks(blackCard?.text || "")}\n\n**${winner.username}** wins the round!\n**Winning Combo:** ${winnerGroup}\n\n**Scores:**\n${scoreList}\n\n**Playing to:** ${game.pointsToWin || 5} points`)
       .setColor(0xFFD700);
 
     const channel = source.channel || source;
