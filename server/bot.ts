@@ -108,30 +108,27 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
   keysToDelete.forEach(k => pickUIs.delete(k));
 
   const players = await storage.getPlayers(gameId);
-  const scores = players.sort((a: any, b: any) => b.score - a.score).map((p: any) => `${p.username}: ${p.score}`).join("\n");
+  const scoresText = players
+    .sort((a: any, b: any) => b.score - a.score)
+    .map((p: any) => `<@${p.userId}>: ${p.score ?? 0}`)
+    .join("\n") || "No scores recorded.";
 
-  if (winnerId) {
-    const winner = players.find((p: any) => p.id === winnerId);
-    await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("GAME OVER")
-          .setDescription(`**${winner?.username}** wins the game with **${winner?.score} points**!\n\n**Final Scores:**\n${scores}`)
-          .setColor(0xFFD700)
-          .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
-      ]
-    });
-  } else {
-    await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("GAME OVER")
-          .setDescription(`${reason || "The game has ended."}\n\n**Final Scores:**\n${scores || "No scores."}`)
-          .setColor(0xFF0000)
-          .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
-      ]
-    });
-  }
+  const winner = winnerId ? players.find((p: any) => p.id === winnerId) : null;
+
+  await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("GAME OVER")
+        .setDescription(
+          winner
+            ? `<@${winner.userId}> wins the game with **${winner.score ?? 0}** point(s)!`
+            : (reason || "The game has been ended.")
+        )
+        .addFields({ name: "Final Scores:", value: scoresText })
+        .setFooter({ text: "Thanks for playing! Use /startgame to play again." })
+        .setColor(winner ? 0xFFD700 : 0xFF0000)
+    ]
+  });
 
   judgeViewMap.delete(gameId);
   await storage.deleteGame(gameId).catch(e => console.error("Failed to delete game from DB:", e));
