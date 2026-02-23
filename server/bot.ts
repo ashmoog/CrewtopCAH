@@ -69,6 +69,7 @@ function parseSinglePick(content: string, handSize: number): { kind: string; idx
 }
 
 const roundTimers: Map<number, NodeJS.Timeout> = new Map();
+const judgeCollectors: Map<number, any> = new Map();
 const endedGames = new Set<number>();
 const activeTransitions = new Set<number>();
 
@@ -86,6 +87,12 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
 
   clearRoundTimer(gameId);
   activeTransitions.delete(gameId);
+
+  const existingJudgeCollector = judgeCollectors.get(gameId);
+  if (existingJudgeCollector && !existingJudgeCollector.ended) {
+    existingJudgeCollector.stop("game_ended");
+  }
+  judgeCollectors.delete(gameId);
 
   const keysToDelete: string[] = [];
   pickUIs.forEach((state, key) => {
