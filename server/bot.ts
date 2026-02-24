@@ -301,6 +301,13 @@ client.on("interactionCreate", async (interaction) => {
       const playedCardIds = new Set(playerPlayed.map(p => p.id));
       const availableHand = hand.filter(c => !playedCardIds.has(c.id));
 
+      if (availableHand.length < pickNeeded) {
+        return interaction.reply({
+          content: `You only have **${availableHand.length}** card(s) but this round needs **${pickNeeded}**. You'll sit this one out.`,
+          ephemeral: true
+        });
+      }
+
       const key = pickUIKey(guildId!, channelId!, user.id);
 
       const existing = pickUIs.get(key);
@@ -865,12 +872,16 @@ async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
   const players = await storage.getPlayers(gameId);
   const currentlyPlayed = await storage.getPlayedCards(gameId);
 
+  const requiredPicks = blackCard.pick || 1;
   const eligiblePlayers = [];
   for (const p of players) {
     if (p.userId === game.judgeId) continue;
     const hand = await storage.getHand(p.id);
     const played = currentlyPlayed.filter(c => c.playerId === p.id);
-    if (hand.length > 0 || played.length > 0) {
+    const playedCardIds = new Set(played.map(pc => pc.id));
+    const availableCards = hand.filter(h => !playedCardIds.has(h.id));
+    const totalAvailable = availableCards.length + played.length;
+    if (totalAvailable >= requiredPicks || played.length >= requiredPicks) {
       eligiblePlayers.push({ player: p, playedCount: played.length });
     }
   }
