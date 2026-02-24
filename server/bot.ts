@@ -131,6 +131,7 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
   });
 
   judgeViewMap.delete(gameId);
+  await storage.updateGameStatus(gameId, "finished").catch(e => console.error("Failed to update game status:", e));
   await storage.deleteGame(gameId).catch(e => console.error("Failed to delete game from DB:", e));
 
   setTimeout(() => endedGames.delete(gameId), 30000);
@@ -540,7 +541,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (commandName === "startgame") {
     let game = await storage.getGame(channelId!);
-    if (game && game.status !== "finished") {
+    if (game) {
       if (game.status === "waiting") {
         const players = await storage.getPlayers(game.id);
         const row = new ActionRowBuilder<ButtonBuilder>()
@@ -553,7 +554,9 @@ client.on("interactionCreate", async (interaction) => {
           components: [row]
         });
       }
-      return interaction.reply({ content: "A game is already in progress in this channel!", ephemeral: true });
+      if (game.status === "playing" || game.status === "judging") {
+        return interaction.reply({ content: "A game is already in progress in this channel!", ephemeral: true });
+      }
     }
 
     const pointsToWin = options.getInteger('points') || 5;
