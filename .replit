@@ -38,3 +38,8 @@ author = "agent"
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
+
+[userenv]
+
+[userenv.shared]
+NEON_DATABASE_URL = "postgresql://neondb_owner:npg_ti4Jr1RoMIBL@ep-empty-sky-aisidlbx.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require"
