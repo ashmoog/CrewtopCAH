@@ -199,6 +199,14 @@ async function endGame(channel: any, gameId: number, winnerId?: number, reason?:
   clearRoundTimer(gameId);
   activeTransitions.delete(gameId);
 
+  if (!channel) {
+    console.error("endGame called with null channel, gameId:", gameId);
+    await storage.updateGameStatus(gameId, "finished").catch(e => console.error("Failed to update game status:", e));
+    await storage.deleteGame(gameId).catch(e => console.error("Failed to delete game from DB:", e));
+    setTimeout(() => endedGames.delete(gameId), 30000);
+    return;
+  }
+
   const keysToDelete: string[] = [];
   pickUIs.forEach((state, key) => {
     if (state.gameId === gameId) {
@@ -594,7 +602,7 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: `Need at least 3 players to start. Currently have ${players.length}.`, ephemeral: true });
       }
 
-      await interaction.reply("Starting the game...");
+      await interaction.deferReply();
       await storage.updateGameStatus(game.id, "playing");
 
       const judge = players[Math.floor(Math.random() * players.length)];
@@ -607,7 +615,14 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      await startRound(interaction.channel, game.id);
+      const channel = interaction.channel;
+      if (!channel) {
+        await interaction.editReply("Could not find the channel.");
+        return;
+      }
+
+      await interaction.editReply("Starting the game...");
+      await startRound(channel, game.id);
     }
 
     return;
@@ -727,8 +742,11 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    await endGame(interaction.channel, game.id, undefined, "The game has been ended.");
-    await interaction.reply({ content: "Game ended!", ephemeral: true });
+    await interaction.reply({ content: "Ending the game..." });
+    const channel = interaction.channel;
+    if (channel) {
+      await endGame(channel, game.id, undefined, "The game has been ended.");
+    }
   }
 
   if (commandName === "pick") {
@@ -1010,6 +1028,7 @@ async function checkAllPlayed(channel: any, gameId: number, blackCard: any) {
 async function transitionToJudging(channel: any, gameId: number, blackCard: any, game: any) {
   if (endedGames.has(gameId)) return;
   if (activeTransitions.has(gameId)) return;
+  if (!channel) return;
   activeTransitions.add(gameId);
 
   try {
@@ -1140,6 +1159,10 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
 async function startRound(channel: any, gameId: number) {
   console.log("Starting round. gameId:", gameId, "ended?", endedGames.has(gameId));
   if (endedGames.has(gameId)) return;
+  if (!channel) {
+    console.error("startRound called with null channel, gameId:", gameId);
+    return;
+  }
   clearRoundTimer(gameId);
 
   const currentGame = await storage.getGame(channel.id);
