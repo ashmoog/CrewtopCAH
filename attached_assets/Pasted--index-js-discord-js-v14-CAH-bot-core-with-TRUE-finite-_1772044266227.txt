@@ -1,0 +1,527 @@
+/**
+ * index.js (discord.js v14) — CAH bot core with TRUE finite decks (no repeats until reshuffle)
+ *
+ * Fixes your issue:
+ * ✅ White cards already played will NOT reappear in hands until the white discard pile reshuffles
+ * ✅ Black cards already played will NOT reappear until the black discard pile reshuffles
+ * ✅ White cards can NEVER become black cards (separate decks)
+ *
+ * How it works:
+ * - Finite draw piles: whiteDraw / blackDraw
+ * - Discard piles: whiteDiscard / blackDiscard
+ * - Hands store card objects {id,text}, not just strings
+ * - When a card is played, it is removed from the player's hand and later moved to discard at round end
+ *
+ * Requirements:
+ * - npm i discord.js
+ * - Put your decks in ./decks/white.json and ./decks/black.json (arrays of strings)
+ * - Set env var DISCORD_TOKEN
+ * - If you use typed-number picks: enable Message Content Intent in Discord Developer Portal
+ *
+ * Commands used (must be registered as slash commands):
+ * - /startgame (optional integer option: points, default 5)
+ * - /joingame
+ * - /endgame
+ *
+ * Gameplay (simple flow):
+ * - /startgame starts game, creator becomes first judge
+ * - players /joingame
+ * - bot deals hands (10)
+ * - bot draws black card
+ * - players submit ONE card at a time by typing a single number 1–10 (exact message)
+ * - once all non-judge players submitted, judge sees randomized submissions and types winning number
+ */
+
+const fs = require("fs");
+const path = require("path");
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Events,
+  PermissionFlagsBits,
+  EmbedBuilder,
+} = require("discord.js");
+
+// -------------------- ENV --------------------
+const TOKEN = process.env.DISCORD_TOKEN;
+if (!TOKEN) throw new Error("Missing DISCORD_TOKEN env var");
+
+// -------------------- LOAD DECKS --------------------
+function loadJsonArray(filePath) {
+  const abs = path.join(__dirname, filePath);
+  const raw = fs.readFileSync(abs, "utf8");
+  const data = JSON.parse(raw);
+  if (!Array.isArray(data)) throw new Error(`${filePath} must be a JSON array`);
+  return data;
+}
+
+// Put your decks here:
+const WHITE_TEXTS = loadJsonArray("./decks/white.json");
+const BLACK_TEXTS = loadJsonArray("./decks/black.json");
+
+// Turn text arrays into stable card objects with ids
+function withIds(texts, prefix) {
+  return texts.map((text, i) => ({ id: `${prefix}_${i}`, text: String(text) }));
+}
+const WHITE_CARDS = withIds(WHITE_TEXTS, "W");
+const BLACK_CARDS = withIds(BLACK_TEXTS, "B");
+
+// -------------------- UTIL --------------------
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function isPurePickMessage(content) {
+  const t = content.trim();
+  return /^(10|[1-9])$/.test(t); // ONLY "1".."10"
+}
+
+function parsePickNumber(content) {
+  const t = content.trim();
+  if (!isPurePickMessage(t)) return null;
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < 1 || n > 10) return null;
+  return n;
+}
+
+// Try to detect "pick 2" type rules in black cards (optional)
+function pickCountFromBlackText(text) {
+  const t = String(text).toLowerCase();
+  // You can adjust this if your black deck has a different format
+  if (t.includes("pick 3") || t.includes("draw 3")) return 3;
+  if (t.includes("pick 2") || t.includes("draw 2")) return 2;
+  return 1;
+}
+
+// Escape for embed safety (avoid backticks breaking formatting)
+function safeText(t) {
+  return String(t).replaceAll("`", "\\`");
+}
+
+// -------------------- DECK STATE (FINITE PILES) --------------------
+function initDeckState() {
+  return {
+    whiteDraw: shuffle([...WHITE_CARDS]),
+    whiteDiscard: [],
+    blackDraw: shuffle([...BLACK_CARDS]),
+    blackDiscard: [],
+  };
+}
+
+function drawCard(deck, color) {
+  const drawKey = color === "white" ? "whiteDraw" : "blackDraw";
+  const discKey = color === "white" ? "whiteDiscard" : "blackDiscard";
+
+  if (deck[drawKey].length === 0) {
+    if (deck[discKey].length === 0) return null;
+    deck[drawKey] = shuffle(deck[discKey]);
+    deck[discKey] = [];
+  }
+  return deck[drawKey].pop(); // removes from draw pile
+}
+
+// -------------------- GAME STATE --------------------
+/**
+ * games key: channelId
+ * game: {
+ *   channelId, ended,
+ *   pointsToWin,
+ *   deck,
+ *   players: Set<userId>,
+ *   judgeId,
+ *   scores: Record<userId, number>,
+ *   hands: Record<userId, Array<{id,text}>>,
+ *   round: {
+ *     blackCard: {id,text} | null,
+ *     pickCount: number,
+ *     submissions: Array<{playerId, cards: Array<{id,text}>}>,
+ *     submittedBy: Set<userId>,
+ *     judgeView: Array<{playerId, cardsText: string}>,
+ *   },
+ *   collector: MessageCollector | null,
+ * }
+ */
+const games = new Map();
+
+function ensureHand(game, playerId, handSize = 10) {
+  if (!game.hands[playerId]) game.hands[playerId] = [];
+  while (game.hands[playerId].length < handSize) {
+    const c = drawCard(game.deck, "white");
+    if (!c) break;
+    game.hands[playerId].push(c);
+  }
+}
+
+function removeCardFromHand(game, playerId, handIndex0) {
+  const hand = game.hands[playerId] || [];
+  const [card] = hand.splice(handIndex0, 1);
+  return card || null;
+}
+
+function startNewRound(game) {
+  const black = drawCard(game.deck, "black");
+  if (!black) return null;
+
+  game.round.blackCard = black;
+  game.round.pickCount = pickCountFromBlackText(black.text);
+  game.round.submissions = [];
+  game.round.submittedBy = new Set();
+  game.round.judgeView = [];
+  return black;
+}
+
+function discardRound(game) {
+  // discard black
+  if (game.round.blackCard) game.deck.blackDiscard.push(game.round.blackCard);
+
+  // discard all played white cards
+  for (const sub of game.round.submissions) {
+    for (const card of sub.cards) game.deck.whiteDiscard.push(card);
+  }
+
+  // reset
+  game.round.blackCard = null;
+  game.round.submissions = [];
+  game.round.submittedBy = new Set();
+  game.round.judgeView = [];
+}
+
+// -------------------- DISCORD CLIENT --------------------
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, // required for typed-number picks
+  ],
+  partials: [Partials.Channel],
+});
+
+// -------------------- EMBEDS --------------------
+function blackCardEmbed(game) {
+  const b = game.round.blackCard;
+  const pick = game.round.pickCount;
+
+  return new EmbedBuilder()
+    .setTitle("Black Card")
+    .setDescription("```text\n" + safeText(b?.text ?? "Missing black card") + "\n```")
+    .addFields(
+      { name: "Pick", value: String(pick), inline: true },
+      { name: "Judge", value: `<@${game.judgeId}>`, inline: true }
+    )
+    .setFooter({ text: "Players: submit ONE card at a time by typing a single number (1-10)." });
+}
+
+function judgeChoicesEmbed(game) {
+  const lines = game.round.judgeView.map((s, i) => {
+    return `**${i + 1}.** ${s.cardsText}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle("Judge Picks")
+    .setDescription(lines.join("\n\n") || "No submissions")
+    .setFooter({ text: `Judge: type a single number (1-${game.round.judgeView.length}).` });
+}
+
+function scoresEmbed(game) {
+  const entries = Object.entries(game.scores)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .map(([uid, pts]) => `<@${uid}>: ${pts ?? 0}`);
+
+  return new EmbedBuilder()
+    .setTitle("Scores")
+    .setDescription(entries.join("\n") || "No scores yet.");
+}
+
+// -------------------- COLLECTOR LOGIC --------------------
+function stopCollector(game) {
+  if (game.collector && !game.collector.ended) game.collector.stop("stopped");
+  game.collector = null;
+}
+
+async function endGame(channel, channelId, reasonText, winnerId = null) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+
+  game.ended = true;
+  stopCollector(game);
+
+  const finalScores = Object.entries(game.scores)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .map(([uid, pts]) => `${uid}: ${pts}`)
+    .join("\n");
+
+  const embed = new EmbedBuilder()
+    .setTitle("GAME OVER")
+    .setDescription(
+      winnerId
+        ? `<@${winnerId}> wins the game with **${game.scores[winnerId]}** point(s)!`
+        : (reasonText || "The game has been ended.")
+    )
+    .addFields({ name: "Final Scores:", value: Object.entries(game.scores).length ? formatScoreLines(game) : "No scores recorded." })
+    .setFooter({ text: "Thanks for playing! Use /startgame to play again." });
+
+  await channel.send({ embeds: [embed] }).catch(() => {});
+
+  // delete entirely
+  games.delete(channelId);
+
+  function formatScoreLines(g) {
+    return Object.entries(g.scores)
+      .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+      .map(([uid, pts]) => `${getName(uid)}: ${pts}`)
+      .join("\n");
+
+    function getName(uid) {
+      // Use mention for safety; Discord will resolve
+      return `<@${uid}>`;
+    }
+  }
+}
+
+function buildJudgeView(game) {
+  // Create array from submissions, shuffle it, and store for judge selection
+  const arr = game.round.submissions.map((s) => ({
+    playerId: s.playerId,
+    cardsText: s.cards.map((c) => safeText(c.text)).join(" "),
+  }));
+  game.round.judgeView = shuffle(arr);
+}
+
+function allNonJudgeSubmitted(game) {
+  const requiredPlayers = [...game.players].filter((id) => id !== game.judgeId);
+  return requiredPlayers.every((pid) => game.round.submittedBy.has(pid));
+}
+
+function startMessageCollector(channel, channelId) {
+  const game = games.get(channelId);
+  if (!game || game.ended) return;
+
+  stopCollector(game);
+
+  game.collector = channel.createMessageCollector({
+    filter: (m) => !m.author.bot,
+    time: 60 * 60 * 1000, // keep it alive; game flow controls the phase
+  });
+
+  game.collector.on("collect", async (m) => {
+    const g = games.get(channelId);
+    if (!g || g.ended) return;
+
+    // Strict message deletion: ONLY delete exact "1".."10" AND never delete judge messages
+    const botCanDelete = m.guild?.members?.me
+      ?.permissionsIn(m.channel)
+      ?.has(PermissionFlagsBits.ManageMessages);
+
+    const isPick = isPurePickMessage(m.content);
+    const shouldDelete = botCanDelete && isPick && m.author.id !== g.judgeId;
+    if (shouldDelete) await m.delete().catch(() => {});
+
+    if (!isPick) return; // ignore everything else
+
+    const n = parsePickNumber(m.content);
+    if (!n) return;
+
+    // If judge is picking winner
+    if (m.author.id === g.judgeId && g.phase === "judgePicking") {
+      const idx = n - 1;
+      if (idx < 0 || idx >= g.round.judgeView.length) return;
+
+      const win = g.round.judgeView[idx];
+      const winnerId = win.playerId;
+
+      g.scores[winnerId] = (g.scores[winnerId] || 0) + 1;
+      await channel.send(`🏆 <@${winnerId}> wins the round! (+1)`).catch(() => {});
+
+      // check game win
+      if (g.scores[winnerId] >= g.pointsToWin) {
+        await endGame(channel, channelId, "", winnerId);
+        return;
+      }
+
+      // round cleanup + deal back up + rotate judge
+      discardRound(g);
+
+      // rotate judge (simple rotation)
+      const playersArr = [...g.players];
+      const curIdx = playersArr.indexOf(g.judgeId);
+      g.judgeId = playersArr[(curIdx + 1) % playersArr.length];
+
+      // ensure hands (deal up to 10)
+      for (const pid of g.players) ensureHand(g, pid, 10);
+
+      // new round
+      startNewRound(g);
+      g.phase = "playersPicking";
+
+      await channel.send({ embeds: [blackCardEmbed(g)] }).catch(() => {});
+      return;
+    }
+
+    // Player submission phase
+    if (g.phase !== "playersPicking") return;
+    if (!g.players.has(m.author.id)) return;
+    if (m.author.id === g.judgeId) return; // judge cannot submit
+
+    // Ensure player hand exists
+    ensureHand(g, m.author.id, 10);
+
+    const handIndex0 = n - 1;
+    const hand = g.hands[m.author.id] || [];
+    if (handIndex0 < 0 || handIndex0 >= hand.length) return;
+
+    // Find or create submission entry for this player
+    let sub = g.round.submissions.find((s) => s.playerId === m.author.id);
+    if (!sub) {
+      sub = { playerId: m.author.id, cards: [] };
+      g.round.submissions.push(sub);
+    }
+
+    // Prevent submitting more than needed
+    if (sub.cards.length >= g.round.pickCount) return;
+
+    // Remove card from hand and add to submission
+    const card = removeCardFromHand(g, m.author.id, handIndex0);
+    if (!card) return;
+
+    sub.cards.push(card);
+
+    // If they reached pickCount, mark as submitted
+    if (sub.cards.length === g.round.pickCount) {
+      g.round.submittedBy.add(m.author.id);
+      await channel.send(`✅ <@${m.author.id}> submitted.`).catch(() => {});
+    } else {
+      await channel.send(`➡️ <@${m.author.id}> submitted ${sub.cards.length}/${g.round.pickCount}.`).catch(() => {});
+    }
+
+    // When all non-judge players submitted, go to judge
+    if (allNonJudgeSubmitted(g)) {
+      buildJudgeView(g);
+      g.phase = "judgePicking";
+      await channel.send({ embeds: [judgeChoicesEmbed(g)] }).catch(() => {});
+    }
+  });
+
+  game.collector.on("end", (_c, reason) => {
+    const g = games.get(channelId);
+    if (!g || g.ended) return;
+    console.log("Collector ended:", reason);
+  });
+}
+
+// -------------------- SLASH COMMAND HANDLER --------------------
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+    if (!interaction.inGuild()) {
+      return interaction.reply({ ephemeral: true, content: "Use these commands inside a server channel." });
+    }
+
+    const channelId = interaction.channelId;
+    const channel = interaction.channel;
+
+    if (interaction.commandName === "startgame") {
+      // If game exists, block
+      const existing = games.get(channelId);
+      if (existing && !existing.ended) {
+        return interaction.reply({ ephemeral: true, content: "A game is already running in this channel." });
+      }
+
+      const pointsOpt = interaction.options.getInteger("points");
+      const pointsToWin = Math.max(1, Math.min(20, pointsOpt ?? 5));
+
+      const game = {
+        channelId,
+        ended: false,
+        pointsToWin,
+        deck: initDeckState(),
+        players: new Set([interaction.user.id]),
+        judgeId: interaction.user.id,
+        scores: { [interaction.user.id]: 0 },
+        hands: {},
+        round: {
+          blackCard: null,
+          pickCount: 1,
+          submissions: [],
+          submittedBy: new Set(),
+          judgeView: [],
+        },
+        phase: "playersPicking",
+        collector: null,
+      };
+
+      games.set(channelId, game);
+
+      // deal hands to creator
+      ensureHand(game, interaction.user.id, 10);
+
+      // start round
+      startNewRound(game);
+
+      await interaction.reply({
+        content: `✅ Game started! Points to win: **${pointsToWin}**\nJudge: <@${game.judgeId}>\nPlayers: use /joingame then submit by typing a single number (1-10).`,
+      });
+
+      await channel.send({ embeds: [blackCardEmbed(game)] }).catch(() => {});
+      startMessageCollector(channel, channelId);
+      return;
+    }
+
+    if (interaction.commandName === "joingame") {
+      const game = games.get(channelId);
+      if (!game || game.ended) {
+        return interaction.reply({ ephemeral: true, content: "No active game in this channel. Use /startgame." });
+      }
+
+      game.players.add(interaction.user.id);
+      if (!(interaction.user.id in game.scores)) game.scores[interaction.user.id] = 0;
+
+      ensureHand(game, interaction.user.id, 10);
+
+      await interaction.reply({ content: `✅ <@${interaction.user.id}> joined the game!` });
+      return;
+    }
+
+    if (interaction.commandName === "endgame") {
+      const game = games.get(channelId);
+      if (!game || game.ended) {
+        return interaction.reply({ ephemeral: true, content: "No active game in this channel." });
+      }
+
+      await interaction.reply({ ephemeral: true, content: "Ending the game…" });
+      await endGame(channel, channelId, "The game has been ended.");
+      return;
+    }
+
+    if (interaction.commandName === "scores") {
+      const game = games.get(channelId);
+      if (!game || game.ended) {
+        return interaction.reply({ ephemeral: true, content: "No active game in this channel." });
+      }
+      return interaction.reply({ embeds: [scoresEmbed(game)], ephemeral: true });
+    }
+  } catch (err) {
+    console.error(err);
+    if (interaction.isRepliable()) {
+      const msg = "Something went wrong.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ ephemeral: true, content: msg }).catch(() => {});
+      } else {
+        await interaction.reply({ ephemeral: true, content: msg }).catch(() => {});
+      }
+    }
+  }
+});
+
+client.once(Events.ClientReady, () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
+process.on("uncaughtException", (e) => console.error("uncaughtException", e));
+
+client.login(TOKEN);
