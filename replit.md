@@ -49,12 +49,13 @@ The bot starts alongside the Express server when the app launches. Game state is
 - **`routes.ts`** — API route contracts with Zod schemas for request/response validation. Currently only one endpoint: `GET /api/stats`
 
 ### Database Schema (PostgreSQL)
-Five main tables:
+Six main tables:
 1. **`cards`** — Card deck (black questions and white answers), with `type`, `text`, `pick` count, and `pack` name
 2. **`games`** — Active game sessions tied to Discord guild/channel IDs, with status (`waiting`/`playing`/`judging`/`finished`), current judge, and current black card
 3. **`players`** — Players in each game, linked to Discord user IDs, with scores and VIP flag
 4. **`hands`** — Cards currently in each player's hand
 5. **`playedCards`** — Cards played in the current round of each game
+6. **`usedCards`** — Tracks all cards (black and white) that have been used in a game session, preventing repeats until the deck is exhausted and reshuffled
 
 The database is seeded with initial card data from `server/cards_data.ts` on startup.
 

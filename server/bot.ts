@@ -498,12 +498,10 @@ client.on("interactionCreate", async (interaction) => {
       const judge = players[Math.floor(Math.random() * players.length)];
       await storage.setGameJudge(game.id, judge.userId);
 
-      const dealtCardIds: number[] = [];
       for (const p of players) {
-        const cards = await storage.getWhiteCards(HAND_SIZE, dealtCardIds);
-        for (const card of cards) {
+        const newCards = await storage.getWhiteCardsExcludingUsed(game.id, HAND_SIZE);
+        for (const card of newCards) {
           await storage.addToHand(p.id, card.id);
-          dealtCardIds.push(card.id);
         }
       }
 
@@ -730,6 +728,10 @@ async function handlePlayerRemoval(channel: any, game: any, wasJudge: boolean) {
 
     if (wasJudge) {
       clearRoundTimer(game.id);
+      const played = await storage.getPlayedCards(game.id);
+      if (played.length > 0) {
+        await storage.markCardsUsed(game.id, played.map(c => c.id), "white");
+      }
       await storage.removePlayedCardsFromHands(game.id);
       await storage.clearPlayedCards(game.id);
       const nextJudgeIndex = 0;
@@ -826,6 +828,9 @@ async function handleJudgeSelection(source: any, game: any, index: number) {
       await endGame(channel, game.id, winnerCard.playerId);
       return;
     }
+
+    const playedWhiteCardIds = playedCards.map(c => c.id);
+    await storage.markCardsUsed(game.id, playedWhiteCardIds, "white");
 
     const players = await storage.getPlayers(game.id);
     const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
@@ -936,6 +941,10 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
       const currentJudgeIndex = players.findIndex((p: any) => p.userId === game.judgeId);
       const nextJudge = players[(currentJudgeIndex + 1) % players.length];
       await storage.setGameJudge(gameId, nextJudge.userId);
+      const allPlayed = await storage.getPlayedCards(gameId);
+      if (allPlayed.length > 0) {
+        await storage.markCardsUsed(gameId, allPlayed.map(c => c.id), "white");
+      }
       await storage.removePlayedCardsFromHands(gameId);
       await storage.clearPlayedCards(gameId);
       await startRound(channel, gameId);
@@ -1004,6 +1013,10 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
         const currentJudgeIndex = players.findIndex((p: any) => p.userId === latestGame.judgeId);
         const nextJudge = players[(currentJudgeIndex + 1) % players.length];
         await storage.setGameJudge(gameId, nextJudge.userId);
+        const timedOutPlayed = await storage.getPlayedCards(gameId);
+        if (timedOutPlayed.length > 0) {
+          await storage.markCardsUsed(gameId, timedOutPlayed.map(c => c.id), "white");
+        }
         await storage.removePlayedCardsFromHands(gameId);
         await storage.clearPlayedCards(gameId);
         await startRound(channel, gameId);
@@ -1027,7 +1040,7 @@ async function startRound(channel: any, gameId: number) {
   if (!currentGame || currentGame.status === "finished") return;
 
   await storage.updateGameStatus(gameId, "playing");
-  const blackCard = await storage.getBlackCard();
+  const blackCard = await storage.getBlackCardExcludingUsed(gameId);
 
   if (!blackCard) {
     await channel.send("Error: Out of black cards!");
@@ -1035,17 +1048,16 @@ async function startRound(channel: any, gameId: number) {
   }
 
   await storage.setGameBlackCard(gameId, blackCard.id);
+  await storage.markCardUsed(gameId, blackCard.id, "black");
 
   const players = await storage.getPlayers(gameId);
-  const existingHandCardIds = await storage.getAllHandCardIds(gameId);
-  const excludeIds = [...existingHandCardIds];
   for (const p of players) {
     const hand = await storage.getHand(p.id);
     if (hand.length < HAND_SIZE) {
-      const newCards = await storage.getWhiteCards(HAND_SIZE - hand.length, excludeIds);
+      const needed = HAND_SIZE - hand.length;
+      const newCards = await storage.getWhiteCardsExcludingUsed(gameId, needed);
       for (const card of newCards) {
         await storage.addToHand(p.id, card.id);
-        excludeIds.push(card.id);
       }
     }
   }
@@ -1141,6 +1153,10 @@ async function startRound(channel: any, gameId: number) {
         const currentJudgeIndex = allPlayers.findIndex((p: any) => p.userId === currentGame.judgeId);
         const nextJudge = allPlayers[(currentJudgeIndex + 1) % allPlayers.length];
         await storage.setGameJudge(gameId, nextJudge.userId);
+        const skippedPlayed = await storage.getPlayedCards(gameId);
+        if (skippedPlayed.length > 0) {
+          await storage.markCardsUsed(gameId, skippedPlayed.map(c => c.id), "white");
+        }
         await storage.removePlayedCardsFromHands(gameId);
         await storage.clearPlayedCards(gameId);
         await startRound(channel, gameId);

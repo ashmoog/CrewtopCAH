@@ -51,6 +51,13 @@ export const playedCards = pgTable("played_cards", {
   cardId: integer("card_id").notNull().references(() => cards.id),
 });
 
+export const usedCards = pgTable("used_cards", {
+  id: serial("id").primaryKey(),
+  gameId: integer("game_id").notNull().references(() => games.id),
+  cardId: integer("card_id").notNull().references(() => cards.id),
+  cardType: text("card_type", { enum: ["black", "white"] }).notNull(),
+});
+
 // === RELATIONS ===
 export const gamesRelations = relations(games, ({ one, many }) => ({
   players: many(players),

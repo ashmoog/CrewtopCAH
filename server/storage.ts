@@ -5,6 +5,7 @@ import {
   players,
   hands,
   playedCards,
+  usedCards,
   type Card,
   type Game,
   type Player,
@@ -50,6 +51,14 @@ export interface IStorage {
   getPlayedCards(gameId: number): Promise<(Card & { playerId: number; username: string })[]>;
   clearPlayedCards(gameId: number): Promise<void>;
   removePlayedCardsFromHands(gameId: number): Promise<void>;
+
+  // Used cards (finite deck tracking)
+  markCardUsed(gameId: number, cardId: number, cardType: "black" | "white"): Promise<void>;
+  markCardsUsed(gameId: number, cardIds: number[], cardType: "black" | "white"): Promise<void>;
+  getUsedCardIds(gameId: number, cardType: "black" | "white"): Promise<number[]>;
+  clearUsedCards(gameId: number, cardType?: "black" | "white"): Promise<void>;
+  getWhiteCardsExcludingUsed(gameId: number, limit: number, extraExcludeIds?: number[]): Promise<Card[]>;
+  getBlackCardExcludingUsed(gameId: number): Promise<Card | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -136,6 +145,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteGame(gameId: number): Promise<void> {
+    await db.delete(usedCards).where(eq(usedCards.gameId, gameId));
     await db.delete(playedCards).where(eq(playedCards.gameId, gameId));
     const gamePlayers = await db.select().from(players).where(eq(players.gameId, gameId));
     for (const p of gamePlayers) {
@@ -261,6 +271,102 @@ export class DatabaseStorage implements IStorage {
         await db.delete(hands).where(eq(hands.id, item.id));
       }
     }
+  }
+
+  async markCardUsed(gameId: number, cardId: number, cardType: "black" | "white"): Promise<void> {
+    await db.insert(usedCards).values({ gameId, cardId, cardType });
+  }
+
+  async markCardsUsed(gameId: number, cardIds: number[], cardType: "black" | "white"): Promise<void> {
+    if (cardIds.length === 0) return;
+    await db.insert(usedCards).values(cardIds.map(cardId => ({ gameId, cardId, cardType })));
+  }
+
+  async getUsedCardIds(gameId: number, cardType: "black" | "white"): Promise<number[]> {
+    const result = await db.select({ cardId: usedCards.cardId })
+      .from(usedCards)
+      .where(and(eq(usedCards.gameId, gameId), eq(usedCards.cardType, cardType)));
+    return result.map(r => r.cardId);
+  }
+
+  async clearUsedCards(gameId: number, cardType?: "black" | "white"): Promise<void> {
+    if (cardType) {
+      await db.delete(usedCards).where(and(eq(usedCards.gameId, gameId), eq(usedCards.cardType, cardType)));
+    } else {
+      await db.delete(usedCards).where(eq(usedCards.gameId, gameId));
+    }
+  }
+
+  async getWhiteCardsExcludingUsed(gameId: number, limit: number, extraExcludeIds: number[] = []): Promise<Card[]> {
+    const usedIds = await this.getUsedCardIds(gameId, "white");
+    const handIds = await this.getAllHandCardIds(gameId);
+    const allExclude = [...new Set([...usedIds, ...handIds, ...extraExcludeIds])];
+
+    let result: Card[];
+    if (allExclude.length > 0) {
+      result = await db.select().from(cards)
+        .where(and(eq(cards.type, "white"), notInArray(cards.id, allExclude)))
+        .orderBy(sql`RANDOM()`)
+        .limit(limit);
+    } else {
+      result = await db.select().from(cards)
+        .where(eq(cards.type, "white"))
+        .orderBy(sql`RANDOM()`)
+        .limit(limit);
+    }
+
+    if (result.length < limit) {
+      await this.clearUsedCards(gameId, "white");
+      const currentHandIds = await this.getAllHandCardIds(gameId);
+      const stillExclude = [...new Set([...currentHandIds, ...extraExcludeIds, ...result.map(c => c.id)])];
+
+      const remaining = limit - result.length;
+      let moreCards: Card[];
+      if (stillExclude.length > 0) {
+        moreCards = await db.select().from(cards)
+          .where(and(eq(cards.type, "white"), notInArray(cards.id, stillExclude)))
+          .orderBy(sql`RANDOM()`)
+          .limit(remaining);
+      } else {
+        moreCards = await db.select().from(cards)
+          .where(eq(cards.type, "white"))
+          .orderBy(sql`RANDOM()`)
+          .limit(remaining);
+      }
+      result = [...result, ...moreCards];
+    }
+
+    return result;
+  }
+
+  async getBlackCardExcludingUsed(gameId: number): Promise<Card | undefined> {
+    const usedIds = await this.getUsedCardIds(gameId, "black");
+
+    let result: Card | undefined;
+    if (usedIds.length > 0) {
+      const [card] = await db.select().from(cards)
+        .where(and(eq(cards.type, "black"), notInArray(cards.id, usedIds)))
+        .orderBy(sql`RANDOM()`)
+        .limit(1);
+      result = card;
+    } else {
+      const [card] = await db.select().from(cards)
+        .where(eq(cards.type, "black"))
+        .orderBy(sql`RANDOM()`)
+        .limit(1);
+      result = card;
+    }
+
+    if (!result) {
+      await this.clearUsedCards(gameId, "black");
+      const [card] = await db.select().from(cards)
+        .where(eq(cards.type, "black"))
+        .orderBy(sql`RANDOM()`)
+        .limit(1);
+      result = card;
+    }
+
+    return result;
   }
 }
 
