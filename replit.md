@@ -38,8 +38,8 @@ The frontend is a single-page app with just a landing page (`Home`) and a 404 pa
 - **Framework**: Express.js on Node with TypeScript (run via tsx)
 - **HTTP Server**: Node's built-in `http.createServer` wrapping Express
 - **Discord Bot**: discord.js v14 with slash commands (`/help`, `/startgame`, `/add`, `/boot`, `/endgame`, `/pick`, `/judge`, `/score`, `/leave`) and button interactions (Join Game, Start Game, View Cards). Players can join mid-game via the Join Game button and will receive cards at the next round.
-- **Database ORM**: Drizzle ORM with PostgreSQL dialect
-- **Database Driver**: `pg` (node-postgres) with connection pooling
+- **Database ORM**: Drizzle ORM with PostgreSQL dialect (neon-serverless adapter)
+- **Database Driver**: `@neondatabase/serverless` with WebSocket-based connection pooling (NeonDB)
 - **Session Store**: connect-pg-simple (available but sessions may not be actively used since there's no user auth on the web side)
 
 The bot starts alongside the Express server when the app launches. Game state is persisted in PostgreSQL.
