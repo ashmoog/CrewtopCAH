@@ -1,8 +1,9 @@
-import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, AttachmentBuilder } from "discord.js";
 import { storage } from "./storage";
 import { db } from "./db";
 import { playedCards as playedCardsTable } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
+import { createCanvas } from "@napi-rs/canvas";
 
 const client = new Client({
   intents: [
@@ -18,6 +19,107 @@ const ROUND_BREAK = 5_000;
 
 function prettyBlanks(text: string): string {
   return text.replace(/_+/g, "⬜⬜⬜⬜⬜");
+}
+
+function wrapLines(ctx: any, text: string, maxWidth: number): string[] {
+  const words = String(text).split(/\s+/);
+  const lines: string[] = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width <= maxWidth) {
+      line = test;
+    } else {
+      if (line) lines.push(line);
+      line = w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function roundRect(ctx: any, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+async function renderBlackCardImage(cardText: string): Promise<Buffer> {
+  const W = 900;
+  const H = 1200;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#0f1115";
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = 70;
+  const x = pad;
+  const y = pad;
+  const w = W - pad * 2;
+  const h = H - pad * 2;
+
+  ctx.fillStyle = "#000000";
+  roundRect(ctx, x, y, w, h, 70);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.textBaseline = "top";
+
+  let fontSize = 64;
+  const innerPad = 70;
+  const maxWidth = w - innerPad * 2;
+  const maxHeight = h - innerPad * 2 - 140;
+
+  function layoutWithFont(size: number) {
+    ctx.font = `700 ${size}px Arial`;
+    const lines = wrapLines(ctx, cardText, maxWidth);
+    const lineHeight = Math.round(size * 1.22);
+    const totalHeight = lines.length * lineHeight;
+    return { lines, lineHeight, totalHeight };
+  }
+
+  let layout = layoutWithFont(fontSize);
+  while (layout.totalHeight > maxHeight && fontSize > 34) {
+    fontSize -= 4;
+    layout = layoutWithFont(fontSize);
+  }
+
+  let ty = y + innerPad;
+  for (const ln of layout.lines) {
+    ctx.fillText(ln, x + innerPad, ty);
+    ty += layout.lineHeight;
+    if (ty > y + innerPad + maxHeight) break;
+  }
+
+  ctx.font = "700 34px Arial";
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText("Cards Against Crewtopia", x + innerPad, y + h - 110);
+
+  const buf = await canvas.encode("png");
+  return Buffer.from(buf);
+}
+
+async function sendBlackCardAsImage(channel: any, blackText: string, extras?: { description?: string; footer?: string; components?: any[] }) {
+  const imgBuf = await renderBlackCardImage(blackText);
+  const file = new AttachmentBuilder(imgBuf, { name: "black-card.png" });
+
+  const embed = new EmbedBuilder()
+    .setImage("attachment://black-card.png")
+    .setColor(0x000000);
+
+  if (extras?.description) embed.setDescription(extras.description);
+  if (extras?.footer) embed.setFooter({ text: extras.footer });
+
+  const msgOptions: any = { embeds: [embed], files: [file] };
+  if (extras?.components) msgOptions.components = extras.components;
+
+  await channel.send(msgOptions);
 }
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -980,13 +1082,17 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
     const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
 
+    const judgingImgBuf = await renderBlackCardImage(blackCard?.text || "");
+    const judgingFile = new AttachmentBuilder(judgingImgBuf, { name: "black-card.png" });
+
     await channel.send({
       embeds: [
         new EmbedBuilder()
-          .setTitle(prettyBlanks(blackCard?.text || ""))
+          .setImage("attachment://black-card.png")
           .setDescription(`**Judge:** <@${game.judgeId}>\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
           .setColor(0x00FF00)
-      ]
+      ],
+      files: [judgingFile]
     });
 
     const timer = setTimeout(async () => {
@@ -1077,14 +1183,9 @@ async function startRound(channel: any, gameId: number) {
         .setStyle(ButtonStyle.Success),
     );
 
-  await channel.send({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle(prettyBlanks(blackCard.text))
-        .setDescription(`**Judge:** <@${game?.judgeId}>${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`)
-        .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!" })
-        .setColor(0x000000)
-    ],
+  await sendBlackCardAsImage(channel, blackCard.text, {
+    description: `**Judge:** <@${game?.judgeId}>${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`,
+    footer: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!",
     components: [row]
   });
 

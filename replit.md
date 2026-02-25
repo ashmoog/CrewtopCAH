@@ -82,6 +82,7 @@ The database is seeded with initial card data from `server/cards_data.ts` on sta
 
 ### Key npm Dependencies
 - **discord.js v14** — Discord bot framework with slash commands, embeds, and button interactions
+- **@napi-rs/canvas** — Canvas-based image rendering for black card images (renders styled PNG cards instead of plain text embeds)
 - **drizzle-orm + drizzle-kit** — Type-safe ORM and migration tooling for PostgreSQL
 - **express** — HTTP server framework
 - **@tanstack/react-query** — Async data fetching and caching on the frontend
