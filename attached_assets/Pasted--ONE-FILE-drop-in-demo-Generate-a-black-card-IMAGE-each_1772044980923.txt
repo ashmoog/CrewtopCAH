@@ -1,0 +1,203 @@
+/**
+ * ONE-FILE drop-in demo: Generate a black-card IMAGE each round (Option 1)
+ * and post it as an embed image in the channel.
+ *
+ * ✅ Uses @napi-rs/canvas (works well on Replit)
+ * ✅ No external APIs
+ * ✅ Renders a "black card" look with wrapped white text
+ *
+ * How to use:
+ * 1) In Replit Shell:
+ *      npm i discord.js @napi-rs/canvas
+ * 2) Set Replit Secret:
+ *      DISCORD_TOKEN = your bot token
+ * 3) Run the bot
+ * 4) Use /blackcard (you must register this slash command once)
+ *
+ * To integrate into your CAH bot:
+ * - Call sendBlackCardAsImage(channel, blackCardText) whenever a new round starts.
+ */
+
+const {
+  Client,
+  GatewayIntentBits,
+  Events,
+  AttachmentBuilder,
+  EmbedBuilder,
+} = require("discord.js");
+
+const { createCanvas } = require("@napi-rs/canvas");
+
+const TOKEN = process.env.DISCORD_TOKEN;
+if (!TOKEN) throw new Error("Missing DISCORD_TOKEN env var");
+
+// ---------- Text wrapping ----------
+function wrapLines(ctx, text, maxWidth) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let line = "";
+
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width <= maxWidth) {
+      line = test;
+    } else {
+      if (line) lines.push(line);
+      line = w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// ---------- Rounded rect ----------
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+// ---------- Render black card PNG ----------
+async function renderBlackCardImage(cardText) {
+  const W = 900;
+  const H = 1200;
+
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  // Outer background (Discord-ish dark)
+  ctx.fillStyle = "#0f1115";
+  ctx.fillRect(0, 0, W, H);
+
+  // Card
+  const pad = 70;
+  const x = pad;
+  const y = pad;
+  const w = W - pad * 2;
+  const h = H - pad * 2;
+
+  ctx.fillStyle = "#000000";
+  roundRect(ctx, x, y, w, h, 70);
+  ctx.fill();
+
+  // Text settings
+  ctx.fillStyle = "#ffffff";
+  ctx.textBaseline = "top";
+
+  // Slightly smarter sizing for very long cards:
+  // Start big and reduce if needed.
+  let fontSize = 64;
+  const innerPad = 70;
+  const maxWidth = w - innerPad * 2;
+  const maxHeight = h - innerPad * 2 - 140; // leave footer room
+
+  function layoutWithFont(size) {
+    ctx.font = `700 ${size}px Arial`;
+    const lines = wrapLines(ctx, cardText, maxWidth);
+    const lineHeight = Math.round(size * 1.22);
+    const totalHeight = lines.length * lineHeight;
+    return { lines, lineHeight, totalHeight };
+  }
+
+  let layout = layoutWithFont(fontSize);
+  while (layout.totalHeight > maxHeight && fontSize > 34) {
+    fontSize -= 4;
+    layout = layoutWithFont(fontSize);
+  }
+
+  // Draw text
+  let ty = y + innerPad;
+  for (const ln of layout.lines) {
+    ctx.fillText(ln, x + innerPad, ty);
+    ty += layout.lineHeight;
+    if (ty > y + innerPad + maxHeight) break;
+  }
+
+  // Footer (optional branding for YOUR bot)
+  ctx.font = "700 34px Arial";
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText("Cards Against Crewtopia", x + innerPad, y + h - 110);
+
+  // Export PNG buffer
+  const buf = await canvas.encode("png");
+  return buf;
+}
+
+// ---------- Send as embed image ----------
+async function sendBlackCardAsImage(channel, blackText) {
+  const imgBuf = await renderBlackCardImage(blackText);
+  const file = new AttachmentBuilder(imgBuf, { name: "black-card.png" });
+
+  const embed = new EmbedBuilder()
+    .setTitle("This round's black card")
+    .setImage("attachment://black-card.png");
+
+  await channel.send({ embeds: [embed], files: [file] });
+}
+
+// ---------- Discord bot ----------
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+});
+
+client.once(Events.ClientReady, () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+/**
+ * This listens for a slash command named /blackcard with a required string option "text".
+ * Example usage: /blackcard text:"We never did find ____, but along the way we learned ____."
+ *
+ * You must register this slash command in your deploy script (or manually) once.
+ */
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "blackcard") {
+      const text = interaction.options.getString("text", true);
+
+      await interaction.reply({ content: "Posting black card…", ephemeral: true });
+      await sendBlackCardAsImage(interaction.channel, text);
+    }
+  } catch (err) {
+    console.error(err);
+    if (interaction.isRepliable()) {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: "Error generating card image.", ephemeral: true }).catch(() => {});
+      } else {
+        await interaction.reply({ content: "Error generating card image.", ephemeral: true }).catch(() => {});
+      }
+    }
+  }
+});
+
+process.on("unhandledRejection", (e) => console.error("unhandledRejection", e));
+process.on("uncaughtException", (e) => console.error("uncaughtException", e));
+
+client.login(TOKEN);
+
+/**
+ * ---------- Slash command JSON (for your deploy script) ----------
+ * {
+ *   name: "blackcard",
+ *   description: "Post a black card image",
+ *   options: [
+ *     {
+ *       name: "text",
+ *       description: "Black card text",
+ *       type: 3,
+ *       required: true
+ *     }
+ *   ]
+ * }
+ *
+ * Integration tip:
+ * In your CAH game, replace your black-card embed send with:
+ *   await sendBlackCardAsImage(channel, game.round.blackCard.text);
+ */
