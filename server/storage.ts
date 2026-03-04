@@ -352,10 +352,14 @@ export class DatabaseStorage implements IStorage {
   async getBlackCardExcludingUsed(gameId: number): Promise<Card | undefined> {
     const usedIds = await this.getUsedCardIds(gameId, "black");
 
+    const [game] = await db.select().from(games).where(eq(games.id, gameId)).limit(1);
+    const currentBlackCardId = game?.currentBlackCardId;
+    const allExclude = [...new Set([...usedIds, ...(currentBlackCardId ? [currentBlackCardId] : [])])];
+
     let result: Card | undefined;
-    if (usedIds.length > 0) {
+    if (allExclude.length > 0) {
       const [card] = await db.select().from(cards)
-        .where(and(eq(cards.type, "black"), notInArray(cards.id, usedIds)))
+        .where(and(eq(cards.type, "black"), notInArray(cards.id, allExclude)))
         .orderBy(sql`RANDOM()`)
         .limit(1);
       result = card;
@@ -369,11 +373,20 @@ export class DatabaseStorage implements IStorage {
 
     if (!result) {
       await this.clearUsedCards(gameId, "black");
-      const [card] = await db.select().from(cards)
-        .where(eq(cards.type, "black"))
-        .orderBy(sql`RANDOM()`)
-        .limit(1);
-      result = card;
+      const reshuffleExclude = currentBlackCardId ? [currentBlackCardId] : [];
+      if (reshuffleExclude.length > 0) {
+        const [card] = await db.select().from(cards)
+          .where(and(eq(cards.type, "black"), notInArray(cards.id, reshuffleExclude)))
+          .orderBy(sql`RANDOM()`)
+          .limit(1);
+        result = card;
+      } else {
+        const [card] = await db.select().from(cards)
+          .where(eq(cards.type, "black"))
+          .orderBy(sql`RANDOM()`)
+          .limit(1);
+        result = card;
+      }
     }
 
     return result;
