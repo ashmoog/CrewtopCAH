@@ -304,6 +304,9 @@ const commands = [
       option.setName('number')
         .setDescription('The number of the winning card')
         .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('refresh')
+    .setDescription('Re-display the current round status'),
 ].map(command => command.toJSON());
 
 export async function startBot() {
@@ -653,7 +656,8 @@ client.on("interactionCreate", async (interaction) => {
             { name: "/endgame", value: "End the current game" },
             { name: "View Cards button", value: "Click to see your hand, then type a number in chat to play" },
             { name: "/score", value: "Show current scores" },
-            { name: "/leave", value: "Leave the game" }
+            { name: "/leave", value: "Leave the game" },
+            { name: "/refresh", value: "Re-display the current round status if embeds got lost" }
           )
           .setFooter({ text: "Each round has a 60-second time limit!" })
           .setColor(0x00AE86)
@@ -839,6 +843,145 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply(`${user.username} left the game.`);
 
     await handlePlayerRemoval(interaction.channel, game, wasJudge);
+  }
+
+  if (commandName === "refresh") {
+    const game = await storage.getGame(channelId!);
+    if (!game) {
+      await interaction.reply({ content: "No active game in this channel.", ephemeral: true });
+      return;
+    }
+
+    if (game.status === "waiting") {
+      const players = await storage.getPlayers(game.id);
+      const leader = players.find(p => p.isVip);
+      const playerList = players.map(p => `**${p.username}**${p.isVip ? " (leader)" : ""}`).join(", ");
+      const row = new ActionRowBuilder<ButtonBuilder>()
+        .addComponents(
+          new ButtonBuilder().setCustomId('join_game').setLabel('Join Game').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('start_game').setLabel('Start Game').setStyle(ButtonStyle.Primary),
+        );
+      await interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Cards Against Humanity")
+            .setDescription(`Waiting for players!\n\nClick **Join Game** to join, or the leader can use \`/add @player\`.\nThe leader (**${leader?.username}**) clicks **Start Game** when ready.\n\nNeed at least 3 players to start.\n**Points to win:** ${game.pointsToWin || 5}\n\n**Players (${players.length}):** ${playerList}`)
+            .setColor(0x000000)
+        ],
+        components: [row]
+      });
+      return;
+    }
+
+    if (game.status === "playing") {
+      const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+      if (!blackCard) {
+        await interaction.reply({ content: "Could not find the current black card.", ephemeral: true });
+        return;
+      }
+
+      const players = await storage.getPlayers(game.id);
+      const playedCards = await storage.getPlayedCards(game.id);
+      const requiredPicks = blackCard.pick || 1;
+      const playerPlayedCount: { [playerId: number]: number } = {};
+      playedCards.forEach(c => {
+        playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
+      });
+      const submitted: string[] = [];
+      const waiting: string[] = [];
+      for (const p of players) {
+        if (p.userId === game.judgeId) continue;
+        const count = playerPlayedCount[p.id] || 0;
+        if (count >= requiredPicks) {
+          submitted.push(p.username);
+        } else {
+          waiting.push(p.username);
+        }
+      }
+
+      const statusText = [
+        submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "",
+        waiting.length > 0 ? `**Waiting on:** ${waiting.join(", ")}` : "",
+      ].filter(Boolean).join("\n");
+
+      const row = new ActionRowBuilder<ButtonBuilder>()
+        .addComponents(
+          new ButtonBuilder().setCustomId('view_hand').setLabel('View Cards').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('join_game').setLabel('Join Game').setStyle(ButtonStyle.Success),
+        );
+
+      await interaction.deferReply();
+      const imgBuf = await renderBlackCardImage(blackCard.text);
+      const file = new AttachmentBuilder(imgBuf, { name: "black-card.png" });
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setImage("attachment://black-card.png")
+            .setColor(0x000000),
+          new EmbedBuilder()
+            .setDescription(`**Judge:** <@${game.judgeId}>${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}\n\n${statusText}`)
+            .setFooter({ text: "Click 'View Cards' to see your hand, then type a number to play!" })
+            .setColor(0x000000)
+        ],
+        files: [file],
+        components: [row]
+      });
+      return;
+    }
+
+    if (game.status === "judging") {
+      const blackCard = game.currentBlackCardId ? await storage.getCard(game.currentBlackCardId) : null;
+      if (!blackCard) {
+        await interaction.reply({ content: "Could not find the current black card.", ephemeral: true });
+        return;
+      }
+
+      const validPlayed = await storage.getPlayedCards(game.id);
+      const groupedPlayed: { [playerId: number]: string[] } = {};
+      const playerNameMap: { [playerId: number]: string } = {};
+      validPlayed.forEach(c => {
+        if (!groupedPlayed[c.playerId]) groupedPlayed[c.playerId] = [];
+        groupedPlayed[c.playerId].push(c.text);
+        playerNameMap[c.playerId] = c.username;
+      });
+
+      const shuffledPlayerIds = judgeViewMap.get(game.id) || Object.keys(groupedPlayed).map(Number);
+      const optionsList = shuffledPlayerIds
+        .filter(pid => groupedPlayed[pid])
+        .map((pid, i) => `**${i + 1}.** ${groupedPlayed[pid].join(" / ")}`).join("\n");
+
+      const allPlayers = await storage.getPlayers(game.id);
+      const playedPlayerIds = new Set(shuffledPlayerIds);
+      const submitted = shuffledPlayerIds.filter(pid => groupedPlayed[pid]).map(pid => playerNameMap[pid]);
+      const missed: string[] = [];
+      for (const p of allPlayers) {
+        if (p.userId === game.judgeId) continue;
+        if (playedPlayerIds.has(p.id)) continue;
+        missed.push(p.username);
+      }
+
+      const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
+      const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
+
+      await interaction.deferReply();
+      const imgBuf = await renderBlackCardImage(blackCard.text);
+      const file = new AttachmentBuilder(imgBuf, { name: "black-card.png" });
+      await interaction.editReply({
+        content: `<@${game.judgeId}>, it's time to judge! Pick the winner.`,
+        embeds: [
+          new EmbedBuilder()
+            .setImage("attachment://black-card.png")
+            .setColor(0x000000),
+          new EmbedBuilder()
+            .setDescription(`**Judge:** <@${game.judgeId}>\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\``)
+            .setColor(0x00FF00)
+        ],
+        files: [file]
+      });
+      return;
+    }
+
+    await interaction.reply({ content: "The game is not currently in an active round.", ephemeral: true });
   }
 });
 
