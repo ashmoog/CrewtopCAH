@@ -581,10 +581,16 @@ client.on("interactionCreate", async (interaction) => {
       const playerList = players.map(p => p.isVip ? `**${p.username}** (leader)` : p.username).join(", ");
 
       if (game.status === "playing" || game.status === "judging") {
-        const originalEmbed = interaction.message.embeds[0];
-        const updatedEmbed = EmbedBuilder.from(originalEmbed)
-          .setDescription(`${originalEmbed.description}\n\n**Players (${players.length}):** ${playerList}`);
-        await interaction.update({ embeds: [updatedEmbed], components: interaction.message.components as any });
+        const messageEmbeds = interaction.message.embeds;
+        const updatedEmbeds = messageEmbeds.map((embed, idx) => {
+          const built = EmbedBuilder.from(embed);
+          if (idx === messageEmbeds.length - 1) {
+            const existingDesc = embed.description || "";
+            built.setDescription(`${existingDesc}\n\n**Players (${players.length}):** ${playerList}`);
+          }
+          return built;
+        });
+        await interaction.update({ embeds: updatedEmbeds, components: interaction.message.components as any });
         await (interaction.channel as any)?.send(`**${user.username}** joined the game! They'll get cards at the start of the next round.`);
       } else {
         const leader = players.find(p => p.isVip);
