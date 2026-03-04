@@ -49,6 +49,7 @@ export interface IStorage {
   // Gameplay
   playCard(gameId: number, playerId: number, cardId: number): Promise<void>;
   getPlayedCards(gameId: number): Promise<(Card & { playerId: number; username: string })[]>;
+  getPlayedCardIds(gameId: number): Promise<number[]>;
   clearPlayedCards(gameId: number): Promise<void>;
   removePlayedCardsFromHands(gameId: number): Promise<void>;
 
@@ -297,10 +298,18 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  async getPlayedCardIds(gameId: number): Promise<number[]> {
+    const result = await db.select({ cardId: playedCards.cardId })
+      .from(playedCards)
+      .where(eq(playedCards.gameId, gameId));
+    return result.map(r => r.cardId);
+  }
+
   async getWhiteCardsExcludingUsed(gameId: number, limit: number, extraExcludeIds: number[] = []): Promise<Card[]> {
     const usedIds = await this.getUsedCardIds(gameId, "white");
     const handIds = await this.getAllHandCardIds(gameId);
-    const allExclude = [...new Set([...usedIds, ...handIds, ...extraExcludeIds])];
+    const playedIds = await this.getPlayedCardIds(gameId);
+    const allExclude = [...new Set([...usedIds, ...handIds, ...playedIds, ...extraExcludeIds])];
 
     let result: Card[];
     if (allExclude.length > 0) {
@@ -318,7 +327,8 @@ export class DatabaseStorage implements IStorage {
     if (result.length < limit) {
       await this.clearUsedCards(gameId, "white");
       const currentHandIds = await this.getAllHandCardIds(gameId);
-      const stillExclude = [...new Set([...currentHandIds, ...extraExcludeIds, ...result.map(c => c.id)])];
+      const currentPlayedIds = await this.getPlayedCardIds(gameId);
+      const stillExclude = [...new Set([...currentHandIds, ...currentPlayedIds, ...extraExcludeIds, ...result.map(c => c.id)])];
 
       const remaining = limit - result.length;
       let moreCards: Card[];

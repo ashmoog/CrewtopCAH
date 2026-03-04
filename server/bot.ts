@@ -50,43 +50,43 @@ function roundRect(ctx: any, x: number, y: number, w: number, h: number, r: numb
 }
 
 async function renderBlackCardImage(cardText: string): Promise<Buffer> {
-  const W = 900;
-  const H = 1200;
+  const W = 550;
+  const H = 400;
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
 
   ctx.fillStyle = "#0f1115";
   ctx.fillRect(0, 0, W, H);
 
-  const pad = 70;
+  const pad = 20;
   const x = pad;
   const y = pad;
   const w = W - pad * 2;
   const h = H - pad * 2;
 
   ctx.fillStyle = "#000000";
-  roundRect(ctx, x, y, w, h, 70);
+  roundRect(ctx, x, y, w, h, 30);
   ctx.fill();
 
   ctx.fillStyle = "#ffffff";
   ctx.textBaseline = "top";
 
-  let fontSize = 64;
-  const innerPad = 70;
+  let fontSize = 36;
+  const innerPad = 30;
   const maxWidth = w - innerPad * 2;
-  const maxHeight = h - innerPad * 2 - 140;
+  const maxHeight = h - innerPad * 2 - 60;
 
   function layoutWithFont(size: number) {
     ctx.font = `700 ${size}px Arial`;
     const lines = wrapLines(ctx, cardText, maxWidth);
-    const lineHeight = Math.round(size * 1.22);
+    const lineHeight = Math.round(size * 1.25);
     const totalHeight = lines.length * lineHeight;
     return { lines, lineHeight, totalHeight };
   }
 
   let layout = layoutWithFont(fontSize);
-  while (layout.totalHeight > maxHeight && fontSize > 34) {
-    fontSize -= 4;
+  while (layout.totalHeight > maxHeight && fontSize > 20) {
+    fontSize -= 2;
     layout = layoutWithFont(fontSize);
   }
 
@@ -97,15 +97,15 @@ async function renderBlackCardImage(cardText: string): Promise<Buffer> {
     if (ty > y + innerPad + maxHeight) break;
   }
 
-  ctx.font = "700 34px Arial";
+  ctx.font = "700 18px Arial";
   ctx.fillStyle = "#ffffff";
-  ctx.fillText("Cards Against Crewtopia", x + innerPad, y + h - 110);
+  ctx.fillText("Cards Against Crewtopia", x + innerPad, y + h - 40);
 
   const buf = await canvas.encode("png");
   return Buffer.from(buf);
 }
 
-async function sendBlackCardAsImage(channel: any, blackText: string, extras?: { description?: string; footer?: string; components?: any[] }) {
+async function sendBlackCardAsImage(channel: any, blackText: string, extras?: { content?: string; description?: string; footer?: string; components?: any[] }) {
   const imgBuf = await renderBlackCardImage(blackText);
   const file = new AttachmentBuilder(imgBuf, { name: "black-card.png" });
 
@@ -117,6 +117,7 @@ async function sendBlackCardAsImage(channel: any, blackText: string, extras?: { 
   if (extras?.footer) embed.setFooter({ text: extras.footer });
 
   const msgOptions: any = { embeds: [embed], files: [file] };
+  if (extras?.content) msgOptions.content = extras.content;
   if (extras?.components) msgOptions.components = extras.components;
 
   await channel.send(msgOptions);
@@ -1105,6 +1106,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
     const judgingFile = new AttachmentBuilder(judgingImgBuf, { name: "black-card.png" });
 
     await channel.send({
+      content: `<@${game.judgeId}>, it's time to judge! Pick the winner.`,
       embeds: [
         new EmbedBuilder()
           .setImage("attachment://black-card.png")
@@ -1207,6 +1209,7 @@ async function startRound(channel: any, gameId: number) {
     );
 
   await sendBlackCardAsImage(channel, blackCard.text, {
+    content: `<@${game?.judgeId}> is the Judge this round!`,
     description: `**Judge:** <@${game?.judgeId}>${(blackCard.pick || 1) > 1 ? `\n\n*Pick ${blackCard.pick} cards!*` : ""}`,
     footer: "Click 'View Cards' to see your hand, then type a number to play! You have 60 seconds!",
     components: [row]
