@@ -109,14 +109,20 @@ async function sendBlackCardAsImage(channel: any, blackText: string, extras?: { 
   const imgBuf = await renderBlackCardImage(blackText);
   const file = new AttachmentBuilder(imgBuf, { name: "black-card.png" });
 
-  const embed = new EmbedBuilder()
+  const imageEmbed = new EmbedBuilder()
     .setImage("attachment://black-card.png")
     .setColor(0x000000);
 
-  if (extras?.description) embed.setDescription(extras.description);
-  if (extras?.footer) embed.setFooter({ text: extras.footer });
+  const embeds: EmbedBuilder[] = [imageEmbed];
 
-  const msgOptions: any = { embeds: [embed], files: [file] };
+  if (extras?.description || extras?.footer) {
+    const textEmbed = new EmbedBuilder().setColor(0x000000);
+    if (extras?.description) textEmbed.setDescription(extras.description);
+    if (extras?.footer) textEmbed.setFooter({ text: extras.footer });
+    embeds.push(textEmbed);
+  }
+
+  const msgOptions: any = { embeds, files: [file] };
   if (extras?.content) msgOptions.content = extras.content;
   if (extras?.components) msgOptions.components = extras.components;
 
@@ -1110,6 +1116,8 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
       embeds: [
         new EmbedBuilder()
           .setImage("attachment://black-card.png")
+          .setColor(0x000000),
+        new EmbedBuilder()
           .setDescription(`**Judge:** <@${game.judgeId}>\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
           .setColor(0x00FF00)
       ],
