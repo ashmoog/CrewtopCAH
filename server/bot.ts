@@ -893,22 +893,16 @@ client.on("interactionCreate", async (interaction) => {
       playedCards.forEach(c => {
         playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
       });
-      const submitted: string[] = [];
       const waiting: string[] = [];
       for (const p of players) {
         if (p.userId === game.judgeId) continue;
         const count = playerPlayedCount[p.id] || 0;
-        if (count >= requiredPicks) {
-          submitted.push(p.username);
-        } else {
+        if (count < requiredPicks) {
           waiting.push(p.username);
         }
       }
 
-      const statusText = [
-        submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "",
-        waiting.length > 0 ? `**Waiting on:** ${waiting.join(", ")}` : "",
-      ].filter(Boolean).join("\n");
+      const statusText = waiting.length > 0 ? `**Waiting on:** ${waiting.join(", ")}` : "Everyone has played!";
 
       const row = new ActionRowBuilder<ButtonBuilder>()
         .addComponents(
@@ -958,7 +952,6 @@ client.on("interactionCreate", async (interaction) => {
 
       const allPlayers = await storage.getPlayers(game.id);
       const playedPlayerIds = new Set(shuffledPlayerIds);
-      const submitted = shuffledPlayerIds.filter(pid => groupedPlayed[pid]).map(pid => playerNameMap[pid]);
       const missed: string[] = [];
       for (const p of allPlayers) {
         if (p.userId === game.judgeId) continue;
@@ -966,8 +959,7 @@ client.on("interactionCreate", async (interaction) => {
         missed.push(p.username);
       }
 
-      const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
-      const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
+      const missedText = missed.length > 0 ? `**Didn't make it:** ${missed.join(", ")}\n\n` : "";
 
       await interaction.deferReply();
       const imgBuf = await renderBlackCardImage(blackCard.text);
@@ -979,7 +971,7 @@ client.on("interactionCreate", async (interaction) => {
             .setImage("attachment://black-card.png")
             .setColor(0x000000),
           new EmbedBuilder()
-            .setDescription(`**Judge:** <@${game.judgeId}>\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\``)
+            .setDescription(`**Judge:** <@${game.judgeId}>\n\n${missedText}**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\``)
             .setColor(0x00FF00)
         ],
         files: [file]
@@ -1243,7 +1235,6 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
 
     const allPlayers = await storage.getPlayers(gameId);
     const playedPlayerIds = new Set(shuffledPlayerIds);
-    const submitted: string[] = shuffledPlayerIds.map(pid => playerNameMap[pid]);
     const missed: string[] = [];
     for (const p of allPlayers) {
       if (p.userId === game.judgeId) continue;
@@ -1254,8 +1245,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
       }
     }
 
-    const submittedText = `**Submitted (${submitted.length}):** ${submitted.join(", ")}`;
-    const missedText = missed.length > 0 ? `\n**Didn't make it:** ${missed.join(", ")}` : "";
+    const missedText = missed.length > 0 ? `**Didn't make it:** ${missed.join(", ")}\n\n` : "";
 
     const judgingImgBuf = await renderBlackCardImage(blackCard?.text || "");
     const judgingFile = new AttachmentBuilder(judgingImgBuf, { name: "black-card.png" });
@@ -1267,7 +1257,7 @@ async function transitionToJudging(channel: any, gameId: number, blackCard: any,
           .setImage("attachment://black-card.png")
           .setColor(0x000000),
         new EmbedBuilder()
-          .setDescription(`**Judge:** <@${game.judgeId}>\n\n${submittedText}${missedText}\n\n**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
+          .setDescription(`**Judge:** <@${game.judgeId}>\n\n${missedText}**Options:**\n${optionsList}\n\nJudge, pick the winner by sending the number (e.g. \`1\`) or using \`/judge <number>\`\n\nYou have **60 seconds** to decide!`)
           .setColor(0x00FF00)
       ],
       files: [judgingFile]
@@ -1390,32 +1380,28 @@ async function startRound(channel: any, gameId: number) {
         playedCards.forEach(c => {
           playerPlayedCount[c.playerId] = (playerPlayedCount[c.playerId] || 0) + 1;
         });
-        const submitted: string[] = [];
         const partial: string[] = [];
-        const missed: string[] = [];
+        const missedOnly: string[] = [];
         for (const p of allPlayers) {
           if (p.userId === currentGame.judgeId) continue;
           const hand = await storage.getHand(p.id);
           const count = playerPlayedCount[p.id] || 0;
           if (hand.length === 0 && count === 0) continue;
           if (count >= requiredPicks) {
-            submitted.push(p.username);
+            // submitted — don't show
           } else if (count > 0) {
             partial.push(p.username);
-            missed.push(p.username);
           } else {
-            missed.push(p.username);
+            missedOnly.push(p.username);
           }
         }
-        const submittedText = submitted.length > 0 ? `**Submitted:** ${submitted.join(", ")}` : "";
         const partialText = partial.length > 0 ? `**Incomplete (not enough cards):** ${partial.join(", ")}` : "";
-        const missedOnly = missed.filter(m => !partial.includes(m));
         const missedText = missedOnly.length > 0 ? `**Didn't play:** ${missedOnly.join(", ")}` : "";
         await channel.send({
           embeds: [
             new EmbedBuilder()
               .setTitle("Time's Up!")
-              .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${submittedText}\n${partialText}\n${missedText}`.trim())
+              .setDescription(`Not everyone played in time, but we'll move on with what we have.\n\n${partialText}\n${missedText}`.trim())
               .setColor(0xFF6600)
           ]
         });
